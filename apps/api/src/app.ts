@@ -165,7 +165,7 @@ async function bootstrapOwner(
   await audit(db, {
     actor: user,
     identity,
-    action: 'identity.owner_bootstrapped',
+    action: 'user.bootstrapped',
     resourceType: 'user',
     resourceId: user.id,
     outcome: 'success',

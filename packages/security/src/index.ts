@@ -12,13 +12,17 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+export function normalizeTeamDomain(teamDomain: string): string {
+  return teamDomain.replace(/\/+$/, '');
+}
+
 export async function verifyAccessJwt(
   token: string,
   teamDomain: string,
   audience: string,
 ): Promise<AccessIdentity> {
-  const issuer = `${teamDomain.replace(/\/$/, '')}/`;
-  const jwks = createRemoteJWKSet(new URL(`${issuer}cdn-cgi/access/certs`));
+  const issuer = normalizeTeamDomain(teamDomain);
+  const jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
   const { payload } = await jwtVerify(token, jwks, { issuer, audience });
   return identityFromPayload(payload, issuer);
 }

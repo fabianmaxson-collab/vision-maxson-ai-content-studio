@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decryptSecret, encryptSecret, identityFromPayload } from './index';
+import { decryptSecret, encryptSecret, identityFromPayload, normalizeTeamDomain } from './index';
 
 const key = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 describe('security primitives', () => {
@@ -16,4 +16,11 @@ describe('security primitives', () => {
         'https://team.cloudflareaccess.com/',
       ).email,
     ).toBe('owner@example.com'));
+
+  it.each([
+    'https://visionmaxson.cloudflareaccess.com',
+    'https://visionmaxson.cloudflareaccess.com/',
+  ])('normalizes the expected issuer without a trailing slash from %s', (teamDomain) => {
+    expect(normalizeTeamDomain(teamDomain)).toBe('https://visionmaxson.cloudflareaccess.com');
+  });
 });
