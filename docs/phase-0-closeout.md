@@ -3,7 +3,7 @@
 - Closeout review date: 2026-09-03
 - Repository branch: `main`
 - Phase: `0. Repository & Cloudflare foundation`
-- Status: conditionally complete; one deployment-configuration discrepancy remains
+- Status: completed
 
 ## Verified locally
 
@@ -38,11 +38,9 @@ The Owner confirmed that:
 - GitHub is connected and `main` is published; and
 - production has not been deployed.
 
-## Closeout discrepancy
+## Deployment target reconciliation
 
-The repository currently declares the staging Worker name as `vision-maxson-studio-staging`, but the deployed Custom Domain targets `vision-maxson-ai-content-studio`. Until these names are aligned, `pnpm deploy:staging` must not be used: it would target a different Worker instead of updating the verified staging deployment.
-
-Resolving this is a Phase 0 configuration correction, not Phase 1 work. It requires explicit approval because changing the repository configuration affects the target of future external deployments.
+The repository staging environment now declares `vision-maxson-ai-content-studio`, matching the Worker targeted by `staging.vision.directormaxson.com`. A staging dry-run confirmed the deployment package and environment bindings without performing an external deployment.
 
 ## GitHub CI visibility
 

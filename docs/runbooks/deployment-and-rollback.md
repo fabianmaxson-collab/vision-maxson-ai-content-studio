@@ -17,11 +17,9 @@ pnpm deploy:staging
 
 After deployment, check Cloudflare Access, the application shell, and `GET /api/v1/health`.
 
-### Current deployment target warning
+### Current deployment target
 
-As verified on 2026-09-03, `staging.vision.directormaxson.com` targets Worker `vision-maxson-ai-content-studio`, while `infra/cloudflare/wrangler.jsonc` declares the staging Worker as `vision-maxson-studio-staging`.
-
-Do not run `pnpm deploy:staging` until the repository target and deployed Worker name have been aligned through an explicitly approved Phase 0 configuration correction. Running it in the current state would target a second Worker rather than update the verified staging deployment.
+As verified on 2026-09-03, `staging.vision.directormaxson.com` targets Worker `vision-maxson-ai-content-studio`. The staging environment in `infra/cloudflare/wrangler.jsonc` uses that exact Worker name, so `pnpm deploy:staging` updates the existing verified staging service rather than creating a second Worker.
 
 ## Production
 
