@@ -1,0 +1,35 @@
+{
+  "name": "vision-maxson-ai-content-studio",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @vision-maxson/web build && pnpm --filter @vision-maxson/api build",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "deploy:preview": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env preview",
+    "deploy:production": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env production",
+    "deploy:staging": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env staging",
+    "dev": "pnpm build:web && wrangler dev --config infra/cloudflare/wrangler.jsonc --env local",
+    "build:web": "pnpm --filter @vision-maxson/web build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@types/node": "latest",
+    "eslint": "latest",
+    "eslint-plugin-react-hooks": "latest",
+    "eslint-plugin-react-refresh": "latest",
+    "globals": "latest",
+    "prettier": "latest",
+    "typescript": "6.0.2",
+    "typescript-eslint": "latest",
+    "wrangler": "latest"
+  }
+}

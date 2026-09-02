@@ -1,0 +1,3 @@
+# Copy to infra/cloudflare/.dev.vars for local-only values.
+# Never place production credentials in a local file.
+# Phase 0 requires no secrets.

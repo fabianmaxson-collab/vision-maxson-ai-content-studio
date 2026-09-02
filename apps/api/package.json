@@ -1,0 +1,18 @@
+{
+  "name": "@vision-maxson/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --config ../../infra/cloudflare/wrangler.jsonc --env local --dry-run --outdir dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "vitest": "latest"
+  }
+}

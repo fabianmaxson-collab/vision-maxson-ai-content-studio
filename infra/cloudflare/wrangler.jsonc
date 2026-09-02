@@ -1,0 +1,73 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "vision-maxson-studio",
+  "main": "../../apps/api/src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+  "assets": {
+    "directory": "../../apps/web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+  "vars": {
+    "ENVIRONMENT": "local",
+    "RELEASE_VERSION": "local",
+  },
+  "env": {
+    "local": {
+      "name": "vision-maxson-studio-local",
+      "workers_dev": true,
+      "preview_urls": false,
+      "vars": {
+        "ENVIRONMENT": "local",
+        "RELEASE_VERSION": "local",
+      },
+    },
+    "preview": {
+      "name": "vision-maxson-studio-preview",
+      "workers_dev": true,
+      "preview_urls": true,
+      "vars": {
+        "ENVIRONMENT": "preview",
+        "RELEASE_VERSION": "preview",
+      },
+    },
+    "staging": {
+      "name": "vision-maxson-studio-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "staging.vision.directormaxson.com",
+          "custom_domain": true,
+        },
+      ],
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "RELEASE_VERSION": "staging",
+      },
+    },
+    "production": {
+      "name": "vision-maxson-studio-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "vision.directormaxson.com",
+          "custom_domain": true,
+        },
+      ],
+      "vars": {
+        "ENVIRONMENT": "production",
+        "RELEASE_VERSION": "production",
+      },
+    },
+  },
+}

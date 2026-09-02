@@ -1,0 +1,5 @@
+node_modules
+dist
+coverage
+pnpm-lock.yaml
+VISION_MAXSON_AI_CONTENT_STUDIO_Master_Specification_V1.1.docx
