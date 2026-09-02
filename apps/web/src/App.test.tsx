@@ -9,13 +9,25 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('foundation shell', () => {
   it('shows the application identity and healthy status', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({ status: 'ok', service: 'api', environment: 'local', version: 'test' }),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        },
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify(
+            (typeof input === 'string'
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url
+            ).endsWith('/me')
+              ? {
+                  user: { email: 'owner@example.test', roles: ['owner'] },
+                  environment: 'local',
+                  database: 'ready',
+                }
+              : { status: 'ok', service: 'api', environment: 'local', version: 'test' },
+          ),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
       ),
     );
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -28,5 +40,6 @@ describe('foundation shell', () => {
 
     expect(screen.getByRole('heading', { name: 'VISION MAXSON' })).toBeInTheDocument();
     expect(await screen.findByText('Foundation online')).toBeInTheDocument();
+    expect(await screen.findByText('owner@example.test')).toBeInTheDocument();
   });
 });

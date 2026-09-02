@@ -95,6 +95,30 @@ h1 {
   background: rgba(9, 15, 37, 0.7);
 }
 
+.readiness {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+  margin: 1.5rem 0 0;
+}
+
+.readiness div {
+  padding: 0.85rem;
+  border: 1px solid rgba(118, 156, 255, 0.22);
+  border-radius: 0.75rem;
+  background: rgba(7, 13, 32, 0.58);
+}
+
+.readiness dt {
+  color: #93a4c7;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+.readiness dd {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
 .status > div {
   display: grid;
   gap: 2px;

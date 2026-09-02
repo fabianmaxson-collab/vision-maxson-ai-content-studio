@@ -9,7 +9,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "hono": "latest"
+    "@vision-maxson/config": "workspace:*",
+    "@vision-maxson/contracts": "workspace:*",
+    "@vision-maxson/domain": "workspace:*",
+    "@vision-maxson/security": "workspace:*",
+    "hono": "latest",
+    "zod": "latest"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",

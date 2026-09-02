@@ -18,7 +18,11 @@
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",
     "test": "pnpm -r --if-present test",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "typecheck": "pnpm -r --if-present typecheck",
+    "db:migrate:local": "wrangler d1 migrations apply vision-maxson-data-staging --local --config infra/cloudflare/wrangler.jsonc --env local",
+    "db:migrate:staging": "wrangler d1 migrations apply vision-maxson-data-staging --remote --config infra/cloudflare/wrangler.jsonc --env staging",
+    "db:migrations:list:staging": "wrangler d1 migrations list vision-maxson-data-staging --remote --config infra/cloudflare/wrangler.jsonc --env staging",
+    "dry-run:staging": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env staging --dry-run --outdir apps/api/dist-staging"
   },
   "devDependencies": {
     "@eslint/js": "latest",

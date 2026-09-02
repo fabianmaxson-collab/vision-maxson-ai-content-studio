@@ -5,6 +5,13 @@ import { createApp, type Bindings } from '../src/app';
 const bindings: Bindings = {
   ENVIRONMENT: 'local',
   RELEASE_VERSION: 'test',
+  ACCESS_TEAM_DOMAIN: 'https://team.cloudflareaccess.com',
+  ACCESS_AUD: '1234567890123456',
+  APP_ORIGIN: 'http://localhost:8787',
+  OWNER_BOOTSTRAP_ENABLED: 'false',
+  BOOTSTRAP_OWNER_EMAIL: 'owner@example.test',
+  TOKEN_ENCRYPTION_KEY: 'not-used-by-these-tests',
+  DB: {} as D1Database,
   ASSETS: {
     fetch: () => Promise.resolve(new Response('asset')),
   } as unknown as Fetcher,
@@ -25,7 +32,7 @@ describe('API foundation', () => {
   });
 
   it('returns a problem response for unknown API routes', async () => {
-    const response = await createApp().request('/api/v1/missing', undefined, bindings);
+    const response = await createApp().request('/api/v2/missing', undefined, bindings);
 
     expect(response.status).toBe(404);
     expect(response.headers.get('cache-control')).toBe('no-store');

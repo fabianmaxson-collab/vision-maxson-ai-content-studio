@@ -1,3 +1,5 @@
 # Copy to infra/cloudflare/.dev.vars for local-only values.
 # Never place production credentials in a local file.
-# Phase 0 requires no secrets.
+# Phase 1 local-only synthetic values. Never copy staging or production secrets here.
+BOOTSTRAP_OWNER_EMAIL=owner@example.test
+TOKEN_ENCRYPTION_KEY=BASE64_ENCODED_32_BYTE_DEVELOPMENT_KEY

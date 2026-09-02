@@ -19,7 +19,19 @@
   "vars": {
     "ENVIRONMENT": "local",
     "RELEASE_VERSION": "local",
+    "ACCESS_TEAM_DOMAIN": "https://visionmaxson.cloudflareaccess.com",
+    "ACCESS_AUD": "local-development-audience",
+    "APP_ORIGIN": "http://localhost:8787",
+    "OWNER_BOOTSTRAP_ENABLED": "false",
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vision-maxson-data-staging",
+      "database_id": "30385914-561a-42f9-9c81-381dc109e18c",
+      "migrations_dir": "../../packages/db/migrations",
+    },
+  ],
   "env": {
     "local": {
       "name": "vision-maxson-studio-local",
@@ -28,7 +40,19 @@
       "vars": {
         "ENVIRONMENT": "local",
         "RELEASE_VERSION": "local",
+        "ACCESS_TEAM_DOMAIN": "https://visionmaxson.cloudflareaccess.com",
+        "ACCESS_AUD": "local-development-audience",
+        "APP_ORIGIN": "http://localhost:8787",
+        "OWNER_BOOTSTRAP_ENABLED": "false",
       },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "vision-maxson-data-staging",
+          "database_id": "30385914-561a-42f9-9c81-381dc109e18c",
+          "migrations_dir": "../../packages/db/migrations",
+        },
+      ],
     },
     "preview": {
       "name": "vision-maxson-studio-preview",
@@ -37,6 +61,10 @@
       "vars": {
         "ENVIRONMENT": "preview",
         "RELEASE_VERSION": "preview",
+        "ACCESS_TEAM_DOMAIN": "https://visionmaxson.cloudflareaccess.com",
+        "ACCESS_AUD": "preview-not-configured",
+        "APP_ORIGIN": "http://localhost:8787",
+        "OWNER_BOOTSTRAP_ENABLED": "false",
       },
     },
     "staging": {
@@ -52,7 +80,19 @@
       "vars": {
         "ENVIRONMENT": "staging",
         "RELEASE_VERSION": "staging",
+        "ACCESS_TEAM_DOMAIN": "https://visionmaxson.cloudflareaccess.com",
+        "ACCESS_AUD": "680daf9488ffc1614b565a3c61e06aeb6bbe78adc410555cd3c8c1889d0d033b",
+        "APP_ORIGIN": "https://staging.vision.directormaxson.com",
+        "OWNER_BOOTSTRAP_ENABLED": "true",
       },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "vision-maxson-data-staging",
+          "database_id": "30385914-561a-42f9-9c81-381dc109e18c",
+          "migrations_dir": "../../packages/db/migrations",
+        },
+      ],
     },
     "production": {
       "name": "vision-maxson-studio-production",

@@ -1,5 +1,7 @@
 # Cloudflare foundation
 
+Phase 1 staging uses D1 `vision-maxson-data-staging` through binding `DB`. Production intentionally has no database binding. Follow the D1 migration/recovery and Phase 1 secret/bootstrap runbooks before changing database or secret configuration.
+
 `wrangler.jsonc` is the repository source of truth for the Worker and Static Assets deployment. Dashboard-only configuration drift should be avoided.
 
 The application has four named environments:
