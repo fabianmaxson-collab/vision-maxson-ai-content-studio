@@ -83,7 +83,7 @@
         "ACCESS_TEAM_DOMAIN": "https://visionmaxson.cloudflareaccess.com",
         "ACCESS_AUD": "680daf9488ffc1614b565a3c61e06aeb6bbe78adc410555cd3c8c1889d0d033b",
         "APP_ORIGIN": "https://staging.vision.directormaxson.com",
-        "OWNER_BOOTSTRAP_ENABLED": "true",
+        "OWNER_BOOTSTRAP_ENABLED": "false",
       },
       "d1_databases": [
         {

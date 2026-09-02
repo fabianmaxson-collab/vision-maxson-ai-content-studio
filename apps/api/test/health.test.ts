@@ -48,4 +48,32 @@ describe('API foundation', () => {
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe('asset');
   });
+
+  it('denies a cryptographically accepted but unprovisioned identity', async () => {
+    const statement = {
+      bind: () => statement,
+      first: () => Promise.resolve(null),
+      run: () => Promise.resolve({}),
+    };
+    const db = { prepare: () => statement } as unknown as D1Database;
+    const app = createApp(() =>
+      Promise.resolve({
+        issuer: 'https://visionmaxson.cloudflareaccess.com',
+        subject: 'unprovisioned-subject',
+        email: 'unprovisioned@example.test',
+      }),
+    );
+
+    const response = await app.request(
+      '/api/v1/me',
+      { headers: { 'Cf-Access-Jwt-Assertion': 'verified-by-test-double' } },
+      { ...bindings, DB: db },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      title: 'Forbidden',
+      detail: 'This authenticated identity is not provisioned.',
+    });
+  });
 });
