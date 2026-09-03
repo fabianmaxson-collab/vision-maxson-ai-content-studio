@@ -34,3 +34,7 @@ Research
 ## Current boundary
 
 Migration 0002 has been applied only to disposable local state. Remote staging D1, staging traffic, Cloudflare resources and production remain unchanged. The next approval boundary is remote staging D1 migration 0002 only, followed by a separate staging Worker deployment authorization. Phase 4 has not started.
+
+## Discoverable future-phase decisions
+
+ADRs 008–010 record Owner-approved future production behavior: bounded autonomy and dynamic resource routing; device-independent cloud execution and responsive/mobile control; and generation supervision, protected clip edits, creative learning, decision provenance and low-noise notifications. They are documentation-only and do not expand the Phase 3 implementation or authorize infrastructure, providers, migration or deployment.
