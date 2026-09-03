@@ -17,6 +17,27 @@ input,
 select {
   font: inherit;
 }
+.review-speech {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.review-speech button,
+.review-speech select {
+  min-height: 38px;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -306,5 +327,41 @@ fieldset {
   .metrics,
   nav {
     grid-template-columns: 1fr;
+  }
+}
+
+.editorial-workspace {
+  display: grid;
+  gap: 18px;
+  margin-top: 24px;
+}
+.workspace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.workspace-tabs button[aria-selected='true'] {
+  border-color: #d6b760;
+  color: #f5dc91;
+}
+.artifact-list {
+  display: grid;
+  gap: 14px;
+}
+.artifact-list article {
+  border: 1px solid #263653;
+  border-radius: 10px;
+  padding: 18px;
+}
+.artifact-text {
+  max-height: 28rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+@media (max-width: 540px) {
+  .workspace-tabs button,
+  .review-speech button,
+  .review-speech select {
+    min-height: 44px;
   }
 }

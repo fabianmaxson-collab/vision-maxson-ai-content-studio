@@ -1,24 +1,20 @@
 # Phase 3 — AI Intelligence & Editorial Planning Core
 
-Status: **ARCHITECTURAL RECONCILIATION COMPLETE; IMPLEMENTATION NOT STARTED**
+Status: **LOCAL PRE-MIGRATION / PRE-DEPLOYMENT CANDIDATE VERIFIED**
 
 Owner decision date: 2026-09-03.
 
-## Approved direction
+## Authority and completed local scope
 
-ADR-007 records the Owner-approved roadmap resegmentation, traceability to Master Specification V1.1, hybrid editorial artifact/version architecture, derived `READY_FOR_GENERATION` readiness, infrastructure boundaries, provider deferral and the real-provider staging validation required before Phase 3 can be declared completed.
+ADR-007 records the Owner-approved roadmap resegmentation and traceability to Master Specification V1.1. ADR-005 remains authoritative for Spanish-first UI/review locales. ADR-006 remains authoritative for browser-native Review Read-Aloud and its strict separation from Production Voice-over.
 
-ADR-005 remains authoritative for Spanish-first UI/review locales. ADR-006 remains authoritative for browser-native Review Read-Aloud / Preview TTS and its strict separation from Production Voice-over.
+The local candidate completes the Phase 2 Drizzle debt remediation and introduces forward-only migration `0002_phase_3_editorial_intelligence.sql` with the approved 22-table direction. It implements immutable, versioned editorial artifacts; exact dependencies and invalidation; version-specific approvals; research provenance; ideas; briefs; scripts and Spanish review linkage; critiques; storyboard/scenes; deterministic timing/preflight foundations; derived generation readiness; prompt/intelligence-run persistence; provider-neutral contracts; server-side RBAC/audit routes; Spanish-first UI; and browser-native Preview TTS.
 
-The approved schema direction contains 22 proposed Phase 3 tables, but no migration has been created or applied. Reasonably bounded editorial text/JSON is planned for D1; no R2 usage is approved for Phase 3 editorial artifacts.
-
-## Existing-schema preparation note
-
-The checked-in Phase 2 SQL migration defines 25 Phase 2 tables, while the current Drizzle mapping covers only a subset. Phase 3 preparation is authorized to map the existing structures that Phase 3 needs. That future mapping is code-only and must reproduce the existing schema exactly; it must not alter remote Phase 2 D1 schema or data.
+Bounded editorial text/JSON remains in D1. No R2, KV, Queue, Durable Object or Workflow resource is introduced.
 
 ## Completion gate
 
-Phase 3 may reach PRE-DEPLOYMENT without a configured AI provider. It must not be declared **COMPLETED** until an approved real provider is integrated and the authenticated staging editorial flow is validated end to end with real output:
+No real AI provider is configured. AI generation routes report `Proveedor de IA no configurado` and create no fabricated output. Phase 3 must not be declared **COMPLETED** until an approved real provider is integrated and this authenticated staging flow passes with real output:
 
 ```text
 Research
@@ -33,8 +29,8 @@ Research
 → READY_FOR_GENERATION
 ```
 
-Fake or hardcoded staging AI output cannot satisfy this criterion.
+`READY_FOR_GENERATION` remains derived while `project.status` is `PREFLIGHT_REVIEW`; it is not a competing canonical status.
 
-## Current boundaries
+## Current boundary
 
-No Phase 3 functional code, migration, D1 change, Cloudflare resource, staging deployment, production change, AI provider connection, credential request, media generation, social OAuth, publishing or Phase 4 work is authorized or underway.
+Migration 0002 has been applied only to disposable local state. Remote staging D1, staging traffic, Cloudflare resources and production remain unchanged. The next approval boundary is remote staging D1 migration 0002 only, followed by a separate staging Worker deployment authorization. Phase 4 has not started.

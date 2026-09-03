@@ -6,6 +6,7 @@ import {
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 const timestamps = {
   createdAt: text('created_at').notNull(),
@@ -230,8 +231,12 @@ export const contentBrands = sqliteTable(
     deletedAt: text('deleted_at'),
   },
   (t) => [
-    index('content_brands_workspace_idx').on(t.workspaceId),
-    uniqueIndex('content_brands_name_schema_uq').on(t.workspaceId, t.normalizedName),
+    uniqueIndex('content_brands_name_uq')
+      .on(t.workspaceId, t.normalizedName)
+      .where(sql`deleted_at IS NULL`),
+    index('content_brands_list_idx')
+      .on(t.workspaceId, t.updatedAt, t.id)
+      .where(sql`deleted_at IS NULL`),
   ],
 );
 export const channelProfiles = sqliteTable(
@@ -261,7 +266,14 @@ export const channelProfiles = sqliteTable(
     updatedBy: text('updated_by'),
     deletedAt: text('deleted_at'),
   },
-  (t) => [index('channel_profiles_workspace_brand_idx').on(t.workspaceId, t.contentBrandId)],
+  (t) => [
+    uniqueIndex('channel_profiles_name_uq')
+      .on(t.workspaceId, t.contentBrandId, t.normalizedName)
+      .where(sql`deleted_at IS NULL`),
+    index('channel_profiles_brand_idx')
+      .on(t.workspaceId, t.contentBrandId)
+      .where(sql`deleted_at IS NULL`),
+  ],
 );
 export const projects = sqliteTable(
   'projects',
@@ -293,7 +305,11 @@ export const projects = sqliteTable(
     updatedBy: text('updated_by'),
     deletedAt: text('deleted_at'),
   },
-  (t) => [index('projects_workspace_status_idx').on(t.workspaceId, t.status)],
+  (t) => [
+    index('projects_list_idx')
+      .on(t.workspaceId, t.status, t.updatedAt, t.id)
+      .where(sql`deleted_at IS NULL`),
+  ],
 );
 export const projectVariants = sqliteTable(
   'project_variants',
@@ -320,5 +336,12 @@ export const projectVariants = sqliteTable(
     updatedBy: text('updated_by'),
     deletedAt: text('deleted_at'),
   },
-  (t) => [index('project_variants_project_idx').on(t.workspaceId, t.projectId)],
+  (t) => [
+    uniqueIndex('project_master_variant_uq')
+      .on(t.projectId)
+      .where(sql`variant_kind='MASTER' AND deleted_at IS NULL`),
+    uniqueIndex('project_platform_variant_uq')
+      .on(t.projectTargetId)
+      .where(sql`variant_kind='PLATFORM' AND deleted_at IS NULL`),
+  ],
 );

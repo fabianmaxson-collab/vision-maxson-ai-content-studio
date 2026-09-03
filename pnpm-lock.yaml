@@ -50,6 +50,9 @@ importers:
       '@vision-maxson/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@vision-maxson/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@vision-maxson/security':
         specifier: workspace:*
         version: link:../../packages/security
@@ -144,6 +147,12 @@ importers:
         version: 4.1.11(@types/node@26.4.1)(jsdom@30.0.1)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.1)(tsx@4.23.13))
 
   packages/domain:
+    devDependencies:
+      vitest:
+        specifier: latest
+        version: 4.1.11(@types/node@26.4.1)(jsdom@30.0.1)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.1)(tsx@4.23.13))
+
+  packages/providers:
     devDependencies:
       vitest:
         specifier: latest

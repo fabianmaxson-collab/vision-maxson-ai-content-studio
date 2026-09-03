@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent, type ReactNode } from 'react';
+import { ReviewReadAloud } from './components/review-read-aloud/ReviewReadAloud';
+import { translate } from './i18n';
 type Catalogs = {
   platforms: Array<{ id: string; key: string; displayName: string }>;
   objectives: Array<{ id: string; displayName: string }>;
   strategyDefaults: Array<{
     id: string;
     platform: string;
-    contentFormat: string;
+    contentFormato: string;
     priority: number;
     preferredMinSeconds: number | null;
     preferredMaxSeconds: number | null;
@@ -54,8 +56,10 @@ const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
     },
   });
   if (!r.ok) {
-    const b = (await r.json().catch(() => ({ detail: 'Request failed' }))) as { detail?: string };
-    throw new Error(b.detail ?? 'Request failed');
+    const b = (await r.json().catch(() => ({ detail: 'La solicitud ha fallado' }))) as {
+      detail?: string;
+    };
+    throw new Error(b.detail ?? 'La solicitud ha fallado');
   }
   return r.json() as Promise<T>;
 };
@@ -66,7 +70,14 @@ const formText = (data: FormData, key: string) => {
 export function App() {
   const qc = useQueryClient(),
     [view, setView] = useState<
-      'overview' | 'brands' | 'profiles' | 'projects' | 'accounts' | 'strategy'
+      | 'overview'
+      | 'brands'
+      | 'profiles'
+      | 'projects'
+      | 'accounts'
+      | 'strategy'
+      | 'intelligence'
+      | 'settings'
     >('overview');
   const me = useQuery({
       queryKey: ['me'],
@@ -224,12 +235,14 @@ export function App() {
         <nav aria-label="Product">
           {(
             [
-              ['overview', 'Overview'],
-              ['brands', 'Brands & Channels'],
-              ['profiles', 'Voice & Characters'],
-              ['projects', 'Projects'],
-              ['accounts', 'Social Accounts'],
-              ['strategy', 'Monetization Strategy'],
+              ['overview', translate('nav.overview')],
+              ['brands', translate('nav.brands')],
+              ['profiles', translate('nav.profiles')],
+              ['projects', translate('nav.projects')],
+              ['accounts', translate('nav.accounts')],
+              ['strategy', translate('nav.strategy')],
+              ['intelligence', translate('nav.intelligence')],
+              ['settings', translate('nav.settings')],
             ] as const
           ).map(([id, label]) => (
             <button key={id} onClick={() => setView(id)} className={view === id ? 'active' : ''}>
@@ -240,7 +253,7 @@ export function App() {
         <div className="identity">
           <span className="status-dot" />
           <div>
-            <strong>{me.data?.user.email ?? 'Checking identity'}</strong>
+            <strong>{me.data?.user.email ?? 'Comprobando identidad'}</strong>
             <small>{me.data?.user.roles.join(', ') ?? 'Cloudflare Access'}</small>
           </div>
         </div>
@@ -248,22 +261,24 @@ export function App() {
       <main>
         <header>
           <div>
-            <p className="eyebrow">PHASE 2 · PRODUCT FOUNDATION</p>
+            <p className="eyebrow">PHASE 3 · PLANIFICACIÓN EDITORIAL</p>
             <h1>
               {
                 {
-                  overview: 'Workspace',
-                  brands: 'Brands & Channels',
-                  profiles: 'Voice & Character Profiles',
-                  projects: 'Projects',
-                  accounts: 'Social Accounts',
-                  strategy: 'Monetization Strategy',
+                  overview: 'Espacio de trabajo',
+                  brands: 'Marcas y Canales',
+                  profiles: 'Perfiles de Voz y Personajes',
+                  projects: 'Proyectos',
+                  accounts: 'Cuentas Sociales',
+                  strategy: 'Estrategia de Monetización',
+                  intelligence: 'Inteligencia IA',
+                  settings: 'Configuración',
                 }[view]
               }
             </h1>
           </div>
           <span className="env">
-            {me.data?.environment ?? 'checking'} · D1 {me.data?.database ?? 'checking'}
+            {me.data?.environment ?? 'comprobando'} · D1 {me.data?.database ?? 'comprobando'}
           </span>
         </header>
         {error && (
@@ -274,19 +289,19 @@ export function App() {
         {view === 'overview' && (
           <section className="dashboard">
             <article className="lead">
-              <p className="kicker">READY FOR CONFIGURATION</p>
-              <h2>Build the editorial system before generating anything.</h2>
+              <p className="kicker">LISTO PARA CONFIGURAR</p>
+              <h2>Prepara el sistema editorial antes de generar contenido.</h2>
               <p>
-                Define real brands, channels, targets and monetization intent. Unknown data remains
-                unknown; no earnings or analytics are fabricated.
+                Define marcas, canales, destinos y objetivos reales. Los datos desconocidos siguen
+                siendo desconocidos; no se inventan ingresos ni analíticas.
               </p>
             </article>
             <div className="metrics">
-              <Metric label="Brands" value={brands.data?.items.length} />
-              <Metric label="Channels" value={channels.data?.items.length} />
-              <Metric label="Draft projects" value={projects.data?.items.length} />
+              <Metric label="Marcas" value={brands.data?.items.length} />
+              <Metric label="Canales" value={channels.data?.items.length} />
+              <Metric label="Proyectos borrador" value={projects.data?.items.length} />
               <Metric
-                label="Connected accounts"
+                label="Cuentas conectadas"
                 value={
                   accounts.data?.items.filter((a) => a.connectionStatus === 'connected').length
                 }
@@ -296,27 +311,27 @@ export function App() {
         )}
         {view === 'brands' && (
           <div className="two-column">
-            <Panel title="Content Brands">
+            <Panel title="Marcas de contenido">
               <form onSubmit={brandSubmit}>
-                <Field label="Name" name="name" />
-                <Field label="Niche" name="niche" optional />
-                <Field label="Primary language" name="language" value="en" />
-                <button className="primary">Create brand</button>
+                <Field label="Nombre" name="name" />
+                <Field label="Nicho" name="niche" optional />
+                <Field label="Idioma principal" name="language" value="en" />
+                <button className="primary">Crear marca</button>
               </form>
               <Cards
-                empty="No brands yet."
+                empty="Todavía no hay marcas."
                 items={brands.data?.items.map((b) => [
                   b.name,
-                  `${b.niche || 'Niche not set'} · ${b.primaryLanguage} · ${b.status}`,
+                  `${b.niche || 'Nicho not set'} · ${b.primaryLanguage} · ${b.status}`,
                 ])}
               />
             </Panel>
-            <Panel title="Channel Setup">
+            <Panel title="Configuración del canal">
               <form onSubmit={channelSubmit}>
                 <label>
-                  Brand
+                  Marca
                   <select name="brandId" required>
-                    <option value="">Select a brand</option>
+                    <option value="">Selecciona una marca</option>
                     {brands.data?.items.map((b) => (
                       <option key={b.id} value={b.id}>
                         {b.name}
@@ -324,13 +339,13 @@ export function App() {
                     ))}
                   </select>
                 </label>
-                <Field label="Channel name" name="name" />
-                <Field label="Primary language" name="language" value="en" />
-                <Field label="Narrative tone" name="tone" optional />
-                <button className="primary">Create channel profile</button>
+                <Field label="Nombre del canal" name="name" />
+                <Field label="Idioma principal" name="language" value="en" />
+                <Field label="Tono narrativo" name="tone" optional />
+                <button className="primary">Crear perfil de canal</button>
               </form>
               <Cards
-                empty="No channel profiles yet."
+                empty="Todavía no hay perfiles de canal."
                 items={channels.data?.items.map((c) => [
                   c.name,
                   `${c.primaryLanguage} · ${c.readinessStatus}`,
@@ -341,13 +356,13 @@ export function App() {
         )}
         {view === 'projects' && (
           <div className="two-column">
-            <Panel title="New project">
+            <Panel title="Nuevo proyecto">
               <form onSubmit={projectSubmit}>
-                <Field label="Title" name="title" />
+                <Field label="Título" name="title" />
                 <label>
-                  Channel
+                  Canal
                   <select name="channelId" required>
-                    <option value="">Select a channel</option>
+                    <option value="">Selecciona un canal</option>
                     {channels.data?.items.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
@@ -356,14 +371,14 @@ export function App() {
                   </select>
                 </label>
                 <label>
-                  Format
+                  Formato
                   <select name="format">
                     <option value="SHORT">Vertical / Short</option>
-                    <option value="LONG_FORM">Long form</option>
+                    <option value="LONG_FORM">Formato largo</option>
                   </select>
                 </label>
                 <label>
-                  Primary objective
+                  Objetivo principal
                   <select name="objective" required>
                     {catalogs.data?.objectives.map((o) => (
                       <option key={o.id} value={o.id}>
@@ -373,7 +388,7 @@ export function App() {
                   </select>
                 </label>
                 <fieldset>
-                  <legend>Platform targets</legend>
+                  <legend>Plataformas destino</legend>
                   {catalogs.data?.platforms.map((p) => (
                     <label className="check" key={p.id}>
                       <input type="checkbox" name="platforms" value={p.id} />
@@ -382,15 +397,15 @@ export function App() {
                   ))}
                 </fieldset>
                 <p className="hint">
-                  One reusable master is created. Platform variants are only needed for meaningful
+                  One reusable master is created. Plataforma variants are only needed for meaningful
                   adaptations.
                 </p>
-                <button className="primary">Create draft</button>
+                <button className="primary">Crear borrador</button>
               </form>
             </Panel>
-            <Panel title="Draft projects">
+            <Panel title="Proyectos en borrador">
               <Cards
-                empty="No projects yet. Create the first real draft."
+                empty="Todavía no hay proyectos. Crea el primer borrador real."
                 items={projects.data?.items.map((p) => [
                   p.title,
                   `${p.format} · ${p.operatingMode} · ${p.status} · ${p.brandName} / ${p.channelName}`,
@@ -400,16 +415,16 @@ export function App() {
           </div>
         )}
         {view === 'accounts' && (
-          <Panel title="Social Accounts" wide>
+          <Panel title="Cuentas sociales" wide>
             <p className="notice">
               OAuth is not available in Phase 2. Accounts are references only and contain no
               credentials.
             </p>
             <form onSubmit={accountSubmit}>
               <label>
-                Channel
+                Canal
                 <select name="channelId" required>
-                  <option value="">Select a channel</option>
+                  <option value="">Selecciona un canal</option>
                   {channels.data?.items.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -418,7 +433,7 @@ export function App() {
                 </select>
               </label>
               <label>
-                Platform
+                Plataforma
                 <select name="platformId" required>
                   {catalogs.data?.platforms.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -427,12 +442,12 @@ export function App() {
                   ))}
                 </select>
               </label>
-              <Field label="Account display name" name="name" />
-              <Field label="Handle (optional)" name="handle" optional />
-              <button className="primary">Add reference</button>
+              <Field label="Nombre visible de la cuenta" name="name" />
+              <Field label="Handle (opcional)" name="handle" optional />
+              <button className="primary">Añadir referencia</button>
             </form>
             <Cards
-              empty="No accounts added. Account and monetization eligibility remain unknown."
+              empty="No hay cuentas añadidas. La elegibilidad de cuenta y monetización sigue siendo desconocida."
               items={accounts.data?.items.map((a) => [
                 a.displayName,
                 `${a.platform} · ${a.channelName} · ${a.connectionStatus}`,
@@ -442,64 +457,172 @@ export function App() {
         )}
         {view === 'profiles' && (
           <div className="two-column">
-            <Panel title="Voice Profiles">
+            <Panel title="Perfiles de voz">
               <form onSubmit={voiceSubmit}>
-                <Field label="Name" name="name" />
-                <Field label="Primary language" name="language" value="en" />
-                <button className="primary">Create voice profile</button>
+                <Field label="Nombre" name="name" />
+                <Field label="Idioma principal" name="language" value="en" />
+                <button className="primary">Crear perfil de voz</button>
               </form>
               <Cards
-                empty="No voice profiles yet."
+                empty="Todavía no hay perfiles de voz."
                 items={voices.data?.items.map((v) => [
                   v.name,
-                  `${v.primaryLanguage ?? 'Language unknown'} · ${v.status}`,
+                  `${v.primaryLanguage ?? 'Idioma desconocido'} · ${v.status}`,
                 ])}
               />
             </Panel>
-            <Panel title="Character Profiles">
+            <Panel title="Perfiles de personajes">
               <form onSubmit={characterSubmit}>
-                <Field label="Name" name="name" />
-                <Field label="Description" name="description" optional />
-                <button className="primary">Create character profile</button>
+                <Field label="Nombre" name="name" />
+                <Field label="Descripción" name="description" optional />
+                <button className="primary">Crear perfil de personaje</button>
               </form>
               <Cards
-                empty="No character profiles yet."
+                empty="Todavía no hay perfiles de personajes."
                 items={characters.data?.items.map((c) => [
                   c.name,
-                  `${c.description || 'Description not set'} · ${c.status}`,
+                  `${c.description || 'Descripción sin definir'} · ${c.status}`,
                 ])}
               />
             </Panel>
           </div>
         )}
         {view === 'strategy' && (
-          <Panel title="Versioned strategy defaults" wide>
+          <Panel title="Estrategia versionada predeterminada" wide>
             <p className="notice">
-              Internal strategy is distinct from external platform policy and never guarantees
-              monetization.
+              La estrategia interna es distinta de las reglas externas de plataforma y nunca
+              garantiza monetización.
             </p>
             <div className="strategy-grid">
               {catalogs.data?.strategyDefaults.map((s) => (
                 <article key={s.id}>
                   <span>
-                    {s.contentFormat} · priority {s.priority}
+                    {s.contentFormato} · priority {s.priority}
                   </span>
                   <h3>{s.platform}</h3>
                   <p>
                     {s.preferredMinSeconds
                       ? `${s.preferredMinSeconds}–${s.preferredMaxSeconds} sec internal preference`
-                      : 'No duration preference configured'}
+                      : 'Sin preferencia de duración configurada'}
                   </p>
                   <small>{s.rationale}</small>
                 </article>
               ))}
             </div>
-            <h3>Financial projections</h3>
-            <p className="unknown">Unknown — no approved or observed revenue inputs exist.</p>
+            <h3>Proyecciones financieras</h3>
+            <p className="unknown">
+              Desconocido: no existen datos de ingresos aprobados u observados.
+            </p>
+          </Panel>
+        )}
+        {view === 'intelligence' && (
+          <Panel title="Inteligencia IA" wide>
+            <p className="notice">{translate('ai.notConfigured')}</p>
+            <p>
+              La arquitectura editorial está preparada para investigación, ideas, brief, guion,
+              revisión en español, crítica, storyboard y preflight. No se generará contenido hasta
+              que el Owner apruebe y configure un proveedor real.
+            </p>
+            <EditorialWorkspace projects={projects.data?.items ?? []} />
+          </Panel>
+        )}
+        {view === 'settings' && (
+          <Panel title="Configuración" wide>
+            <p className="notice">
+              Idioma de interfaz: español. El idioma de producción se configura por proyecto.
+            </p>
           </Panel>
         )}
       </main>
     </div>
+  );
+}
+type EditorialArtifact = {
+  artifactType: string;
+  currentVersionId: string | null;
+  versionNumber: number | null;
+  languageCode: string | null;
+  contentText: string | null;
+};
+const workspaceTabs = [
+  ['summary', 'Resumen', null],
+  ['research', 'Investigación', 'RESEARCH'],
+  ['ideas', 'Ideas', 'IDEA_CANDIDATE'],
+  ['brief', 'Brief', 'CONTENT_BRIEF'],
+  ['script', 'Guion', 'PRODUCTION_SCRIPT'],
+  ['storyboard', 'Storyboard', 'STORYBOARD'],
+  ['preflight', 'Preflight', 'PREFLIGHT'],
+] as const;
+function EditorialWorkspace({ projects }: { projects: Project[] }) {
+  const [projectId, setProjectId] = useState('');
+  const [tab, setTab] = useState<(typeof workspaceTabs)[number][0]>('summary');
+  const artifacts = useQuery({
+    queryKey: ['editorial-artifacts', projectId],
+    queryFn: () =>
+      api<{ items: EditorialArtifact[] }>(`/projects/${projectId}/editorial-artifacts`),
+    enabled: Boolean(projectId),
+  });
+  const artifactType = workspaceTabs.find(([id]) => id === tab)?.[2];
+  const visible = (artifacts.data?.items ?? []).filter(
+    (artifact) => artifactType === null || artifact.artifactType === artifactType,
+  );
+  return (
+    <section className="editorial-workspace" aria-label="Espacio editorial del proyecto">
+      <label>
+        Proyecto
+        <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+          <option value="">Selecciona un proyecto real</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="workspace-tabs" role="tablist" aria-label="Flujo editorial">
+        {workspaceTabs.map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {!projectId ? (
+        <p className="empty">Selecciona un proyecto para revisar sus artefactos editoriales.</p>
+      ) : artifacts.isLoading ? (
+        <p>Consultando artefactos…</p>
+      ) : !visible.length ? (
+        <p className="empty">No hay artefactos reales en esta sección.</p>
+      ) : (
+        <div className="artifact-list">
+          {visible.map((artifact) => (
+            <article key={artifact.currentVersionId ?? artifact.artifactType}>
+              <small>
+                {artifact.artifactType} · versión {artifact.versionNumber ?? '—'}
+              </small>
+              {artifact.artifactType === 'PRODUCTION_SCRIPT' && <h3>GUION DE PRODUCCIÓN</h3>}
+              {artifact.artifactType === 'REVIEW_TRANSLATION' && (
+                <h3>VERSIÓN PARA REVISIÓN · Español</h3>
+              )}
+              {artifact.contentText && (
+                <>
+                  <p className="artifact-text">{artifact.contentText}</p>
+                  <ReviewReadAloud
+                    text={artifact.contentText}
+                    language={artifact.languageCode ?? 'es'}
+                  />
+                </>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 function Field({

@@ -1,6 +1,9 @@
 export * from './lifecycle';
 export * from './monetization';
 export * from './parameters';
+export * from './editorial';
+export * from './intelligence';
+export * from './timing';
 
 export const roles = ['owner', 'admin', 'operator', 'viewer'] as const;
 export type Role = (typeof roles)[number];
@@ -24,7 +27,14 @@ export type Permission =
   | 'monetization:read'
   | 'monetization:write_status'
   | 'projects:read'
-  | 'projects:write';
+  | 'projects:write'
+  | 'editorial:read'
+  | 'editorial:write'
+  | 'editorial:approve'
+  | 'intelligence:execute'
+  | 'intelligence:read'
+  | 'prompts:admin'
+  | 'providers:admin';
 
 const readProduct: Permission[] = [
   'catalogs:read',
@@ -34,6 +44,8 @@ const readProduct: Permission[] = [
   'social_accounts:read',
   'monetization:read',
   'projects:read',
+  'editorial:read',
+  'intelligence:read',
 ];
 const editProduct: Permission[] = [
   'brands:write',
@@ -41,6 +53,9 @@ const editProduct: Permission[] = [
   'profiles:write',
   'social_accounts:write',
   'projects:write',
+  'editorial:write',
+  'editorial:approve',
+  'intelligence:execute',
 ];
 
 const permissions: Record<Role, ReadonlySet<Permission>> = {
@@ -52,6 +67,8 @@ const permissions: Record<Role, ReadonlySet<Permission>> = {
     'roles:write',
     'audit:read',
     'monetization:write_status',
+    'prompts:admin',
+    'providers:admin',
     ...readProduct,
     ...editProduct,
   ]),
@@ -62,6 +79,8 @@ const permissions: Record<Role, ReadonlySet<Permission>> = {
     'users:read',
     'audit:read',
     'monetization:write_status',
+    'prompts:admin',
+    'providers:admin',
     ...readProduct,
     ...editProduct,
   ]),

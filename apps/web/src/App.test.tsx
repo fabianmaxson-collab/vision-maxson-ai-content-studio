@@ -7,7 +7,7 @@ import { App } from './App';
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('Phase 2 product shell', () => {
+describe('Phase 3 product shell', () => {
   it('shows authenticated product navigation and honest empty states', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) =>
       Promise.resolve(
@@ -45,9 +45,9 @@ describe('Phase 2 product shell', () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByRole('button', { name: 'Projects' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Workspace' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Proyectos' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Espacio de trabajo' })).toBeInTheDocument();
     expect(await screen.findByText('owner@example.test')).toBeInTheDocument();
-    expect(screen.getByText(/no earnings or analytics are fabricated/i)).toBeInTheDocument();
+    expect(screen.getByText(/no se inventan ingresos ni analíticas/i)).toBeInTheDocument();
   });
 });
