@@ -37,6 +37,13 @@ type Account = {
   channelName: string;
   connectionStatus: string;
 };
+type Profile = {
+  id: string;
+  name: string;
+  primaryLanguage?: string;
+  description?: string;
+  status: string;
+};
 const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   const r = await fetch(`/api/v1${path}`, {
     ...init,
@@ -58,9 +65,9 @@ const formText = (data: FormData, key: string) => {
 };
 export function App() {
   const qc = useQueryClient(),
-    [view, setView] = useState<'overview' | 'brands' | 'projects' | 'accounts' | 'strategy'>(
-      'overview',
-    );
+    [view, setView] = useState<
+      'overview' | 'brands' | 'profiles' | 'projects' | 'accounts' | 'strategy'
+    >('overview');
   const me = useQuery({
       queryKey: ['me'],
       queryFn: () =>
@@ -84,6 +91,14 @@ export function App() {
     accounts = useQuery({
       queryKey: ['accounts'],
       queryFn: () => api<{ items: Account[] }>('/social-accounts'),
+    }),
+    voices = useQuery({
+      queryKey: ['voices'],
+      queryFn: () => api<{ items: Profile[] }>('/voice-profiles'),
+    }),
+    characters = useQuery({
+      queryKey: ['characters'],
+      queryFn: () => api<{ items: Profile[] }>('/character-profiles'),
     });
   const createBrand = useMutation({
       mutationFn: (body: unknown) =>
@@ -102,6 +117,21 @@ export function App() {
       mutationFn: (body: unknown) =>
         api('/projects', { method: 'POST', body: JSON.stringify(body) }),
       onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+    }),
+    createAccount = useMutation({
+      mutationFn: (body: unknown) =>
+        api('/social-accounts', { method: 'POST', body: JSON.stringify(body) }),
+      onSuccess: () => qc.invalidateQueries({ queryKey: ['accounts'] }),
+    }),
+    createVoice = useMutation({
+      mutationFn: (body: unknown) =>
+        api('/voice-profiles', { method: 'POST', body: JSON.stringify(body) }),
+      onSuccess: () => qc.invalidateQueries({ queryKey: ['voices'] }),
+    }),
+    createCharacter = useMutation({
+      mutationFn: (body: unknown) =>
+        api('/character-profiles', { method: 'POST', body: JSON.stringify(body) }),
+      onSuccess: () => qc.invalidateQueries({ queryKey: ['characters'] }),
     });
   const brandSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -149,7 +179,38 @@ export function App() {
         operatingMode: 'ASSISTED',
       });
   };
-  const error = createBrand.error ?? createChannel.error ?? createProject.error;
+  const accountSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const d = new FormData(e.currentTarget);
+    createAccount.mutate({
+      channelProfileId: formText(d, 'channelId'),
+      platformId: formText(d, 'platformId'),
+      displayName: d.get('name'),
+      handle: d.get('handle') || null,
+      externalAccountId: null,
+    });
+  };
+  const voiceSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const d = new FormData(e.currentTarget);
+    createVoice.mutate({
+      name: d.get('name'),
+      primaryLanguage: d.get('language'),
+      configuration: { contractVersion: 1 },
+    });
+  };
+  const characterSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const d = new FormData(e.currentTarget);
+    createCharacter.mutate({ name: d.get('name'), description: d.get('description') });
+  };
+  const error =
+    createBrand.error ??
+    createChannel.error ??
+    createProject.error ??
+    createAccount.error ??
+    createVoice.error ??
+    createCharacter.error;
   return (
     <div className="app-shell">
       <aside>
@@ -165,6 +226,7 @@ export function App() {
             [
               ['overview', 'Overview'],
               ['brands', 'Brands & Channels'],
+              ['profiles', 'Voice & Characters'],
               ['projects', 'Projects'],
               ['accounts', 'Social Accounts'],
               ['strategy', 'Monetization Strategy'],
@@ -192,6 +254,7 @@ export function App() {
                 {
                   overview: 'Workspace',
                   brands: 'Brands & Channels',
+                  profiles: 'Voice & Character Profiles',
                   projects: 'Projects',
                   accounts: 'Social Accounts',
                   strategy: 'Monetization Strategy',
@@ -342,6 +405,32 @@ export function App() {
               OAuth is not available in Phase 2. Accounts are references only and contain no
               credentials.
             </p>
+            <form onSubmit={accountSubmit}>
+              <label>
+                Channel
+                <select name="channelId" required>
+                  <option value="">Select a channel</option>
+                  {channels.data?.items.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Platform
+                <select name="platformId" required>
+                  {catalogs.data?.platforms.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Field label="Account display name" name="name" />
+              <Field label="Handle (optional)" name="handle" optional />
+              <button className="primary">Add reference</button>
+            </form>
             <Cards
               empty="No accounts added. Account and monetization eligibility remain unknown."
               items={accounts.data?.items.map((a) => [
@@ -350,6 +439,38 @@ export function App() {
               ])}
             />
           </Panel>
+        )}
+        {view === 'profiles' && (
+          <div className="two-column">
+            <Panel title="Voice Profiles">
+              <form onSubmit={voiceSubmit}>
+                <Field label="Name" name="name" />
+                <Field label="Primary language" name="language" value="en" />
+                <button className="primary">Create voice profile</button>
+              </form>
+              <Cards
+                empty="No voice profiles yet."
+                items={voices.data?.items.map((v) => [
+                  v.name,
+                  `${v.primaryLanguage ?? 'Language unknown'} · ${v.status}`,
+                ])}
+              />
+            </Panel>
+            <Panel title="Character Profiles">
+              <form onSubmit={characterSubmit}>
+                <Field label="Name" name="name" />
+                <Field label="Description" name="description" optional />
+                <button className="primary">Create character profile</button>
+              </form>
+              <Cards
+                empty="No character profiles yet."
+                items={characters.data?.items.map((c) => [
+                  c.name,
+                  `${c.description || 'Description not set'} · ${c.status}`,
+                ])}
+              />
+            </Panel>
+          </div>
         )}
         {view === 'strategy' && (
           <Panel title="Versioned strategy defaults" wide>
