@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./openai": "./src/openai.ts",
+    "./policy": "./src/policy.ts"
   },
   "scripts": {
     "test": "vitest run",
@@ -12,5 +14,8 @@
   },
   "devDependencies": {
     "vitest": "latest"
+  },
+  "dependencies": {
+    "openai": "^7.9.0"
   }
 }

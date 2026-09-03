@@ -3,3 +3,7 @@
 # Phase 1 local-only synthetic values. Never copy staging or production secrets here.
 BOOTSTRAP_OWNER_EMAIL=owner@example.test
 TOKEN_ENCRYPTION_KEY=BASE64_ENCODED_32_BYTE_DEVELOPMENT_KEY
+OPENAI_API_KEY=
+# Keep false until connectivity and catalog validation succeed.
+OPENAI_PROVIDER_ENABLED=false
+OPENAI_API_BASE_URL=https://api.openai.com/v1

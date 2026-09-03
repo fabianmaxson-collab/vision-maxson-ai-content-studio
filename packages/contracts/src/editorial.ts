@@ -119,3 +119,80 @@ export const intelligenceTaskSchema = z.enum([
   'STORYBOARD_PLANNER',
   'PREFLIGHT_ANALYSIS',
 ]);
+export const researchOutputSchema = z
+  .object({
+    summary: z.string().min(1).max(32000),
+    claims: z
+      .array(
+        z.object({
+          claim: z.string().min(1).max(16000),
+          evidenceClass: z.enum(['AI_INFERENCE', 'UNKNOWN']),
+          confidence: z.number().min(0).max(1).nullable(),
+        }),
+      )
+      .max(100),
+  })
+  .strict();
+export const ideaGenerationOutputSchema = z
+  .object({
+    items: z
+      .array(
+        z
+          .object({
+            title: z.string().min(1).max(1000),
+            angle: z.string().max(4000),
+            hook: z.string().max(4000),
+            rationale: z.string().max(4000),
+            audience: z.array(z.string().max(1000)).max(20),
+            targetFormat: z.enum(['SHORT', 'LONG_FORM']),
+            risks: z.array(z.string().max(2000)).max(30),
+            confidence: z.number().min(0).max(1).nullable(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(10),
+  })
+  .strict();
+export const productionScriptOutputSchema = z
+  .object({
+    title: z.string().min(1).max(1000),
+    languageCode: languageCodeSchema,
+    segments: z
+      .array(
+        z
+          .object({ order: z.number().int().positive(), text: z.string().min(1).max(32768) })
+          .strict(),
+      )
+      .min(1)
+      .max(500),
+  })
+  .strict();
+export const reviewTranslationOutputSchema = z
+  .object({
+    sourceScriptVersionId: id,
+    languageCode: z.literal('es'),
+    faithfulTranslation: z.string().min(1).max(262144),
+  })
+  .strict();
+export const storyboardOutputSchema = z
+  .object({ scenes: z.array(storyboardSceneSchema).min(1).max(500) })
+  .strict();
+export const preflightAnalysisOutputSchema = z
+  .object({
+    checks: z.array(preflightCheckSchema).min(1).max(100),
+    recommendation: z.enum(['PASS', 'WARNING', 'BLOCKED', 'UNKNOWN']),
+  })
+  .strict();
+export const intelligenceCommandSchema = z
+  .object({
+    mode: z.enum(['AUTO', 'PREFER', 'LOCKED']).default('AUTO'),
+    preferredProviderKey: z.string().min(1).max(100).optional(),
+    preferredModelKey: z.string().min(1).max(200).optional(),
+    inputArtifactVersionId: id.nullable().default(null),
+    creativeRegeneration: z.boolean().default(false),
+  })
+  .superRefine((value, context) => {
+    if (value.mode === 'LOCKED' && (!value.preferredProviderKey || !value.preferredModelKey))
+      context.addIssue({ code: 'custom', message: 'LOCKED requires provider and model' });
+  });

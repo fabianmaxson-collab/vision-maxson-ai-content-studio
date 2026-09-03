@@ -22,7 +22,7 @@ importers:
         version: 7.1.1(eslint@10.9.1(supports-color@10.2.2))(supports-color@10.2.2)
       eslint-plugin-react-refresh:
         specifier: latest
-        version: 0.5.5(eslint@10.9.1(supports-color@10.2.2))
+        version: 0.5.6(eslint@10.9.1(supports-color@10.2.2))
       globals:
         specifier: latest
         version: 17.12.0
@@ -153,6 +153,10 @@ importers:
         version: 4.1.11(@types/node@26.4.1)(jsdom@30.0.1)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.1)(tsx@4.23.13))
 
   packages/providers:
+    dependencies:
+      openai:
+        specifier: ^7.9.0
+        version: 7.9.0(undici@8.10.1)(ws@8.21.0)(zod@4.5.4)
     devDependencies:
       vitest:
         specifier: latest
@@ -1601,8 +1605,8 @@ packages:
     peerDependencies:
       eslint: ^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0-0 || ^9.0.0 || ^10.0.0
 
-  eslint-plugin-react-refresh@0.5.5:
-    resolution: {integrity: sha512-vG7yLURXNvCHy0FBdbZRwIu0BLPJMlUUJS2Ep7ud9w1YCLftFZtuEjyjhym0Qq9yuZ6LJUitNlu/hMk0gakXAw==}
+  eslint-plugin-react-refresh@0.5.6:
+    resolution: {integrity: sha512-uZnh24On2bk478AkaDAKcpRiYhS3qFSaSNvpXxV6/Ek/BBDICkWGG7MnBSfjnIlCVBei5vsLlIeQYxbF22+Udg==}
     peerDependencies:
       eslint: ^9 || ^10
 
@@ -1922,6 +1926,30 @@ packages:
   obug@2.1.4:
     resolution: {integrity: sha512-4a+OsYv9UktOJKE+l1A4OufDgdRF9PifWj+tJnHURo/P+WOxpG4GzUFL9qCalmWauao6ogiG+QvnCovwPoyAWA==}
     engines: {node: '>=12.20.0'}
+
+  openai@7.9.0:
+    resolution: {integrity: sha512-Qfx4qKmPllnilbuP6NgEj5KPUxLShYxrlRPWh3ZRQgNgs5B1V52PrfAdEQbW9MTGq7MquDYFMm+K/KXxiY736w==}
+    engines: {node: '>=22.0.0'}
+    peerDependencies:
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      undici: '>=5 <9'
+      ws: ^8.21.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      undici:
+        optional: true
+      ws:
+        optional: true
+      zod:
+        optional: true
 
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
@@ -3420,7 +3448,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  eslint-plugin-react-refresh@0.5.5(eslint@10.9.1(supports-color@10.2.2)):
+  eslint-plugin-react-refresh@0.5.6(eslint@10.9.1(supports-color@10.2.2)):
     dependencies:
       eslint: 10.9.1(supports-color@10.2.2)
 
@@ -3712,6 +3740,12 @@ snapshots:
   node-releases@2.0.54: {}
 
   obug@2.1.4: {}
+
+  openai@7.9.0(undici@8.10.1)(ws@8.21.0)(zod@4.5.4):
+    optionalDependencies:
+      undici: 8.10.1
+      ws: 8.21.0
+      zod: 4.5.4
 
   optionator@0.9.4:
     dependencies:

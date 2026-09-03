@@ -539,21 +539,35 @@ export function App() {
 }
 type EditorialArtifact = {
   artifactType: string;
+  status: string;
   currentVersionId: string | null;
   versionNumber: number | null;
   languageCode: string | null;
   contentText: string | null;
+  contentJson: string | null;
+  candidateId: string | null;
 };
 const workspaceTabs = [
   ['summary', 'Resumen', null],
   ['research', 'Investigación', 'RESEARCH'],
   ['ideas', 'Ideas', 'IDEA_CANDIDATE'],
   ['brief', 'Brief', 'CONTENT_BRIEF'],
-  ['script', 'Guion', 'PRODUCTION_SCRIPT'],
+  ['script', 'Guion de producción', 'PRODUCTION_SCRIPT'],
+  ['review', 'Revisión en español', 'REVIEW_TRANSLATION'],
+  ['critique', 'Crítica', 'SCRIPT_CRITIQUE'],
   ['storyboard', 'Storyboard', 'STORYBOARD'],
   ['preflight', 'Preflight', 'PREFLIGHT'],
 ] as const;
+const generationRoutes: Record<string, string> = {
+  research: 'research/generate',
+  ideas: 'ideas/generate',
+  brief: 'content-brief/generate',
+  script: 'scripts/generate',
+  storyboard: 'storyboards/generate',
+  preflight: 'preflight/execute',
+};
 function EditorialWorkspace({ projects }: { projects: Project[] }) {
+  const qc = useQueryClient();
   const [projectId, setProjectId] = useState('');
   const [tab, setTab] = useState<(typeof workspaceTabs)[number][0]>('summary');
   const artifacts = useQuery({
@@ -562,12 +576,53 @@ function EditorialWorkspace({ projects }: { projects: Project[] }) {
       api<{ items: EditorialArtifact[] }>(`/projects/${projectId}/editorial-artifacts`),
     enabled: Boolean(projectId),
   });
+  const providers = useQuery({
+    queryKey: ['ai-catalog'],
+    queryFn: () =>
+      api<{ configured: boolean; items: Array<{ displayName: string; status: string }> }>(
+        '/ai/catalog',
+      ),
+  });
+  const execute = useMutation({
+    mutationFn: (route: string) =>
+      api<{ run: { status: string; actualCost?: number | null; currency?: string | null } }>(
+        `/projects/${projectId}/${route}`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': crypto.randomUUID() },
+          body: JSON.stringify({ mode: 'AUTO' }),
+        },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['editorial-artifacts', projectId] }),
+  });
+  const selectIdea = useMutation({
+    mutationFn: (candidateId: string) =>
+      api(`/projects/${projectId}/ideas/${candidateId}/select`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['editorial-artifacts', projectId] }),
+  });
+  const approve = useMutation({
+    mutationFn: (versionId: string) =>
+      api(`/editorial-artifact-versions/${versionId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ decision: 'APPROVED', comment: null }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['editorial-artifacts', projectId] }),
+  });
   const artifactType = workspaceTabs.find(([id]) => id === tab)?.[2];
   const visible = (artifacts.data?.items ?? []).filter(
     (artifact) => artifactType === null || artifact.artifactType === artifactType,
   );
+  const actionRoute = generationRoutes[tab];
   return (
     <section className="editorial-workspace" aria-label="Espacio editorial del proyecto">
+      <p className={providers.data?.configured ? 'success' : 'notice'}>
+        Proveedor IA:{' '}
+        {providers.isLoading
+          ? 'consultando…'
+          : providers.data?.configured
+            ? 'configurado'
+            : 'no configurado'}
+      </p>
       <label>
         Proyecto
         <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
@@ -592,6 +647,28 @@ function EditorialWorkspace({ projects }: { projects: Project[] }) {
           </button>
         ))}
       </div>
+      {projectId && actionRoute && (
+        <button
+          type="button"
+          disabled={execute.isPending || !providers.data?.configured}
+          onClick={() => execute.mutate(actionRoute)}
+        >
+          {execute.isPending ? 'Ejecutando…' : 'Generar etapa'}
+        </button>
+      )}
+      {execute.isError && (
+        <p className="notice" role="alert">
+          {execute.error.message}
+        </p>
+      )}
+      {execute.data && (
+        <p>
+          Estado: {execute.data.run.status} · Coste:{' '}
+          {execute.data.run.actualCost == null
+            ? 'desconocido'
+            : `${execute.data.run.actualCost} ${execute.data.run.currency ?? ''}`}
+        </p>
+      )}
       {!projectId ? (
         <p className="empty">Selecciona un proyecto para revisar sus artefactos editoriales.</p>
       ) : artifacts.isLoading ? (
@@ -603,7 +680,8 @@ function EditorialWorkspace({ projects }: { projects: Project[] }) {
           {visible.map((artifact) => (
             <article key={artifact.currentVersionId ?? artifact.artifactType}>
               <small>
-                {artifact.artifactType} · versión {artifact.versionNumber ?? '—'}
+                {artifact.artifactType} · versión {artifact.versionNumber ?? '—'} ·{' '}
+                {artifact.status}
               </small>
               {artifact.artifactType === 'PRODUCTION_SCRIPT' && <h3>GUION DE PRODUCCIÓN</h3>}
               {artifact.artifactType === 'REVIEW_TRANSLATION' && (
@@ -617,6 +695,49 @@ function EditorialWorkspace({ projects }: { projects: Project[] }) {
                     language={artifact.languageCode ?? 'es'}
                   />
                 </>
+              )}
+              {artifact.contentJson && !artifact.contentText && (
+                <pre className="artifact-text">
+                  {JSON.stringify(JSON.parse(artifact.contentJson), null, 2)}
+                </pre>
+              )}
+              {artifact.candidateId && (
+                <button
+                  type="button"
+                  disabled={selectIdea.isPending}
+                  onClick={() => selectIdea.mutate(artifact.candidateId!)}
+                >
+                  Seleccionar idea
+                </button>
+              )}
+              {artifact.artifactType === 'PRODUCTION_SCRIPT' && artifact.currentVersionId && (
+                <>
+                  <button
+                    type="button"
+                    disabled={execute.isPending}
+                    onClick={() =>
+                      execute.mutate(`scripts/${artifact.currentVersionId}/translate-review`)
+                    }
+                  >
+                    Crear revisión en español
+                  </button>
+                  <button
+                    type="button"
+                    disabled={execute.isPending}
+                    onClick={() => execute.mutate(`scripts/${artifact.currentVersionId}/critique`)}
+                  >
+                    Analizar guion
+                  </button>
+                </>
+              )}
+              {artifact.currentVersionId && artifact.status === 'active' && (
+                <button
+                  type="button"
+                  disabled={approve.isPending}
+                  onClick={() => approve.mutate(artifact.currentVersionId!)}
+                >
+                  Aprobar versión
+                </button>
               )}
             </article>
           ))}

@@ -16,6 +16,9 @@ export interface Bindings {
   OWNER_BOOTSTRAP_ENABLED: 'true' | 'false';
   BOOTSTRAP_OWNER_EMAIL: string;
   TOKEN_ENCRYPTION_KEY: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_PROVIDER_ENABLED?: 'true' | 'false';
+  OPENAI_API_BASE_URL?: string;
   DB: D1Database;
   ASSETS: Fetcher;
 }

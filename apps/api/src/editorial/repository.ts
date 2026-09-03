@@ -24,7 +24,7 @@ export class EditorialRepository {
     return (
       await this.db
         .prepare(
-          `SELECT a.id,a.artifact_type AS artifactType,a.status,a.current_version_id AS currentVersionId,v.version_number AS versionNumber,v.language_code AS languageCode,v.source_type AS sourceType,v.content_text AS contentText,v.content_json AS contentJson,v.source_script_version_id AS sourceScriptVersionId,v.created_at AS createdAt FROM editorial_artifacts a LEFT JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.project_id=? AND a.workspace_id=? AND a.deleted_at IS NULL ORDER BY a.created_at,a.id`,
+          `SELECT a.id,a.artifact_type AS artifactType,a.status,a.current_version_id AS currentVersionId,v.version_number AS versionNumber,v.language_code AS languageCode,v.source_type AS sourceType,v.content_text AS contentText,v.content_json AS contentJson,v.source_script_version_id AS sourceScriptVersionId,v.created_at AS createdAt,(SELECT ic.id FROM idea_candidates ic WHERE ic.artifact_version_id=v.id LIMIT 1) AS candidateId FROM editorial_artifacts a LEFT JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.project_id=? AND a.workspace_id=? AND a.deleted_at IS NULL ORDER BY a.created_at,a.id`,
         )
         .bind(projectId, this.actor.workspaceId)
         .all()
@@ -200,10 +200,45 @@ export class EditorialRepository {
           version.artifactId,
           this.actor.workspaceId,
         ),
+      this.db
+        .prepare(
+          `UPDATE preflight_assessments SET generation_readiness=CASE WHEN ?='APPROVED' AND overall_result='PASS' AND NOT EXISTS(SELECT 1 FROM preflight_checks WHERE preflight_assessment_id=preflight_assessments.id AND result!='PASS') THEN 'READY_FOR_GENERATION' ELSE 'NOT_READY' END WHERE artifact_version_id=? AND workspace_id=?`,
+        )
+        .bind(decision, versionId, this.actor.workspaceId),
     ]);
     return { approvalId, versionId, decision };
   }
 
+  async projectCostSummary(projectId: string) {
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) AS runCount,SUM(actual_cost) AS knownSubtotal,SUM(CASE WHEN actual_cost IS NULL THEN 1 ELSE 0 END) AS unknownCount,MIN(currency) AS minCurrency,MAX(currency) AS maxCurrency FROM intelligence_runs WHERE project_id=? AND workspace_id=? AND status='SUCCEEDED'`,
+      )
+      .bind(projectId, this.actor.workspaceId)
+      .first<{
+        runCount: number;
+        knownSubtotal: number | null;
+        unknownCount: number;
+        minCurrency: string | null;
+        maxCurrency: string | null;
+      }>();
+    const complete = Boolean(
+      row &&
+      row.runCount > 0 &&
+      row.unknownCount === 0 &&
+      row.minCurrency === row.maxCurrency &&
+      row.minCurrency,
+    );
+    return {
+      runCount: row?.runCount ?? 0,
+      knownSubtotal: row?.knownSubtotal ?? null,
+      unknownCount: row?.unknownCount ?? 0,
+      currency: complete ? row!.minCurrency : null,
+      projectEnvelopeWith15Percent:
+        complete && row && row.knownSubtotal !== null ? row.knownSubtotal * 1.15 : null,
+      complete,
+    };
+  }
   async providerCatalog() {
     const providers = await this.db
       .prepare(

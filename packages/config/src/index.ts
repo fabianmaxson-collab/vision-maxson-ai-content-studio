@@ -19,6 +19,12 @@ const schema = z.object({
     .pipe(z.string().email())
     .transform((value) => value.toLowerCase()),
   TOKEN_ENCRYPTION_KEY: z.string().min(1),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  OPENAI_PROVIDER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  OPENAI_API_BASE_URL: z.string().url().default('https://api.openai.com/v1'),
 });
 
 export type RuntimeConfig = z.output<typeof schema>;

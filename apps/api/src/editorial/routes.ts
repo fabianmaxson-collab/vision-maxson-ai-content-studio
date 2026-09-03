@@ -1,8 +1,16 @@
-import { approvalSchema, createArtifactVersionSchema } from '@vision-maxson/contracts';
+import {
+  approvalSchema,
+  createArtifactVersionSchema,
+  intelligenceCommandSchema,
+  type intelligenceTaskSchema,
+} from '@vision-maxson/contracts';
 import { hasPermission, newId, type Permission } from '@vision-maxson/domain';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import type { Bindings } from '../app';
+import { ProviderError } from '@vision-maxson/providers';
+import { EditorialExecutionService } from './execution';
 import { EditorialRepository, type EditorialActor } from './repository';
+import type { z } from 'zod';
 
 type Vars = {
   requestId: string;
@@ -66,11 +74,12 @@ editorialRoutes.get(
   requirePermission('editorial:read'),
   async (c) => {
     const repository = new EditorialRepository(c.env.DB, c.get('user'));
-    const [artifacts, providers] = await Promise.all([
+    const [artifacts, providers, cost] = await Promise.all([
       repository.list(c.req.param('projectId')),
       repository.providerCatalog(),
+      repository.projectCostSummary(c.req.param('projectId')),
     ]);
-    return c.json({ artifacts, aiProviderConfigured: providers.configured });
+    return c.json({ artifacts, aiProviderConfigured: providers.configured, projectCost: cost });
   },
 );
 editorialRoutes.get(
@@ -144,20 +153,111 @@ editorialRoutes.post(
     }
   },
 );
-for (const route of [
-  '/projects/:projectId/research/generate',
-  '/projects/:projectId/ideas/generate',
-  '/projects/:projectId/content-brief/generate',
-  '/projects/:projectId/scripts/generate',
-  '/projects/:projectId/scripts/:versionId/translate-review',
-  '/projects/:projectId/scripts/:versionId/critique',
-  '/projects/:projectId/storyboards/generate',
-] as const)
-  editorialRoutes.post(route, requirePermission('intelligence:execute'), (c) =>
-    problem(
-      c,
-      503,
-      'AI Provider Not Configured',
-      'Proveedor de IA no configurado. No se ha generado ningún artefacto.',
-    ),
-  );
+type IntelligenceTask = z.infer<typeof intelligenceTaskSchema>;
+const taskRoutes: ReadonlyArray<readonly [string, IntelligenceTask]> = [
+  ['/projects/:projectId/research/generate', 'TOPIC_RESEARCH'],
+  ['/projects/:projectId/ideas/generate', 'IDEA_GENERATION'],
+  ['/projects/:projectId/content-brief/generate', 'CONTENT_BRIEF'],
+  ['/projects/:projectId/scripts/generate', 'SCRIPT_WRITER_SHORT'],
+  ['/projects/:projectId/scripts/:versionId/translate-review', 'REVIEW_TRANSLATION_ES'],
+  ['/projects/:projectId/scripts/:versionId/critique', 'SCRIPT_CRITIC'],
+  ['/projects/:projectId/storyboards/generate', 'STORYBOARD_PLANNER'],
+];
+const executionService = (c: Context<Env>) =>
+  new EditorialExecutionService(c.env.DB, c.get('user'), {
+    openAIEnabled: c.env.OPENAI_PROVIDER_ENABLED === 'true',
+    ...(c.env.OPENAI_API_KEY ? { openAIApiKey: c.env.OPENAI_API_KEY } : {}),
+    openAIBaseUrl: c.env.OPENAI_API_BASE_URL ?? 'https://api.openai.com/v1',
+  });
+for (const [route, task] of taskRoutes)
+  editorialRoutes.post(route, requirePermission('intelligence:execute'), async (c) => {
+    const parsed = intelligenceCommandSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success)
+      return problem(c, 422, 'Validation Failed', 'El comando de IA no es válido.');
+    const idempotencyKey = c.req.header('Idempotency-Key');
+    if (!idempotencyKey || idempotencyKey.length > 200)
+      return problem(c, 422, 'Validation Failed', 'Se requiere una clave Idempotency-Key válida.');
+    const inputArtifactVersionId = c.req.param('versionId') || parsed.data.inputArtifactVersionId;
+    try {
+      const result = await executionService(c).execute(
+        c.req.param('projectId')!,
+        task,
+        {
+          mode: parsed.data.mode,
+          inputArtifactVersionId,
+          creativeRegeneration: parsed.data.creativeRegeneration,
+          ...(parsed.data.preferredProviderKey
+            ? { preferredProviderKey: parsed.data.preferredProviderKey }
+            : {}),
+          ...(parsed.data.preferredModelKey
+            ? { preferredModelKey: parsed.data.preferredModelKey }
+            : {}),
+        },
+        idempotencyKey,
+      );
+      await audit(c, 'intelligence.run_completed', 'intelligence_run', String(result.run?.id));
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      if (error instanceof ProviderError)
+        return problem(
+          c,
+          error.category === 'AUTHENTICATION' ? 503 : error.retryable ? 503 : 422,
+          error.category === 'AUTHENTICATION'
+            ? 'AI Provider Not Configured'
+            : 'AI Execution Failed',
+          error.message,
+        );
+      return problem(c, 503, 'AI Execution Failed', 'La ejecución no pudo completarse.');
+    }
+  });
+editorialRoutes.get(
+  '/intelligence-runs/:runId',
+  requirePermission('intelligence:read'),
+  async (c) => {
+    const run = await executionService(c).getRun(c.req.param('runId'));
+    return run ? c.json({ run }) : problem(c, 404, 'Not Found', 'No se encontró la ejecución.');
+  },
+);
+editorialRoutes.post(
+  '/intelligence-runs/:runId/cancel',
+  requirePermission('intelligence:execute'),
+  async (c) => {
+    try {
+      const result = await executionService(c).cancel(c.req.param('runId'));
+      await audit(c, 'intelligence.run_cancelled', 'intelligence_run', result.id);
+      return c.json({ run: result });
+    } catch (error) {
+      return problem(
+        c,
+        409,
+        'Conflict',
+        error instanceof Error ? error.message : 'La ejecución no puede cancelarse.',
+      );
+    }
+  },
+);
+editorialRoutes.post(
+  '/projects/:projectId/ideas/:candidateId/select',
+  requirePermission('editorial:approve'),
+  async (c) => {
+    const user = c.get('user'),
+      at = new Date().toISOString(),
+      candidateId = c.req.param('candidateId');
+    const candidate = await c.env.DB.prepare(
+      `SELECT id FROM idea_candidates WHERE id=? AND project_id=? AND workspace_id=?`,
+    )
+      .bind(candidateId, c.req.param('projectId'), user.workspaceId)
+      .first();
+    if (!candidate) return problem(c, 404, 'Not Found', 'No se encontró la idea.');
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE idea_candidates SET status='CANDIDATE',updated_at=?,updated_by=?,version=version+1 WHERE project_id=? AND workspace_id=? AND status='SELECTED'`,
+      ).bind(at, user.id, c.req.param('projectId'), user.workspaceId),
+      c.env.DB.prepare(
+        `UPDATE idea_candidates SET status='SELECTED',updated_at=?,updated_by=?,version=version+1 WHERE id=? AND workspace_id=?`,
+      ).bind(at, user.id, candidateId, user.workspaceId),
+    ]);
+    await audit(c, 'idea.selected', 'idea_candidate', candidateId);
+    return c.json({ id: candidateId, status: 'SELECTED' });
+  },
+);
