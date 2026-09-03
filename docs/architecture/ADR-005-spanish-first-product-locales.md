@@ -36,3 +36,5 @@ Future UI work must use an i18n architecture with Spanish as the default locale 
 ## Current boundary
 
 Phase 2 remains closed as delivered. No broad translation, UI refactor, content-generation behavior or Phase 3 functionality is performed as part of this documentation change.
+
+ADR-006 applies this locale separation to the future Review Read-Aloud / Preview TTS design: playback follows each artifact's language metadata, while Spanish remains the default review language.
