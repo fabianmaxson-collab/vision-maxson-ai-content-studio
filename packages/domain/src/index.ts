@@ -1,8 +1,47 @@
+export * from './lifecycle';
+export * from './monetization';
+export * from './parameters';
+
 export const roles = ['owner', 'admin', 'operator', 'viewer'] as const;
 export type Role = (typeof roles)[number];
 
 export type Permission =
-  'system:read' | 'settings:read' | 'settings:write' | 'users:read' | 'roles:write' | 'audit:read';
+  | 'system:read'
+  | 'settings:read'
+  | 'settings:write'
+  | 'users:read'
+  | 'roles:write'
+  | 'audit:read'
+  | 'catalogs:read'
+  | 'brands:read'
+  | 'brands:write'
+  | 'channels:read'
+  | 'channels:write'
+  | 'profiles:read'
+  | 'profiles:write'
+  | 'social_accounts:read'
+  | 'social_accounts:write'
+  | 'monetization:read'
+  | 'monetization:write_status'
+  | 'projects:read'
+  | 'projects:write';
+
+const readProduct: Permission[] = [
+  'catalogs:read',
+  'brands:read',
+  'channels:read',
+  'profiles:read',
+  'social_accounts:read',
+  'monetization:read',
+  'projects:read',
+];
+const editProduct: Permission[] = [
+  'brands:write',
+  'channels:write',
+  'profiles:write',
+  'social_accounts:write',
+  'projects:write',
+];
 
 const permissions: Record<Role, ReadonlySet<Permission>> = {
   owner: new Set([
@@ -12,10 +51,22 @@ const permissions: Record<Role, ReadonlySet<Permission>> = {
     'users:read',
     'roles:write',
     'audit:read',
+    'monetization:write_status',
+    ...readProduct,
+    ...editProduct,
   ]),
-  admin: new Set(['system:read', 'settings:read', 'settings:write', 'users:read', 'audit:read']),
-  operator: new Set(['system:read', 'settings:read']),
-  viewer: new Set(['system:read', 'settings:read']),
+  admin: new Set([
+    'system:read',
+    'settings:read',
+    'settings:write',
+    'users:read',
+    'audit:read',
+    'monetization:write_status',
+    ...readProduct,
+    ...editProduct,
+  ]),
+  operator: new Set(['system:read', 'settings:read', ...readProduct, ...editProduct]),
+  viewer: new Set(['system:read', 'settings:read', ...readProduct]),
 };
 
 export function hasPermission(userRoles: readonly Role[], permission: Permission): boolean {

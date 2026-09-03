@@ -1,4 +1,5 @@
 import { z } from 'zod';
+export * from './product';
 
 export const settingValueSchema = z.union([
   z.string().max(4096),

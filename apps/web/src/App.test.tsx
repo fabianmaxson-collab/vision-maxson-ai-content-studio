@@ -7,8 +7,8 @@ import { App } from './App';
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('foundation shell', () => {
-  it('shows the application identity and healthy status', async () => {
+describe('Phase 2 product shell', () => {
+  it('shows authenticated product navigation and honest empty states', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) =>
       Promise.resolve(
         new Response(
@@ -24,7 +24,14 @@ describe('foundation shell', () => {
                   environment: 'local',
                   database: 'ready',
                 }
-              : { status: 'ok', service: 'api', environment: 'local', version: 'test' },
+              : (typeof input === 'string'
+                    ? input
+                    : input instanceof URL
+                      ? input.href
+                      : input.url
+                  ).endsWith('/catalogs')
+                ? { platforms: [], objectives: [], strategyDefaults: [] }
+                : { items: [] },
           ),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -38,8 +45,9 @@ describe('foundation shell', () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByRole('heading', { name: 'VISION MAXSON' })).toBeInTheDocument();
-    expect(await screen.findByText('Foundation online')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Projects' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Workspace' })).toBeInTheDocument();
     expect(await screen.findByText('owner@example.test')).toBeInTheDocument();
+    expect(screen.getByText(/no earnings or analytics are fabricated/i)).toBeInTheDocument();
   });
 });

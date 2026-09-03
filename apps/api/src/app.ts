@@ -4,6 +4,7 @@ import { hasPermission, newId, roles, type Permission, type Role } from '@vision
 import { verifyAccessJwt, type AccessIdentity } from '@vision-maxson/security';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { secureHeaders } from 'hono/secure-headers';
+import { productRoutes } from './product/routes';
 
 export interface Bindings {
   ENVIRONMENT: 'local' | 'preview' | 'staging' | 'production';
@@ -344,6 +345,7 @@ export function createApp(verifyIdentity: IdentityVerifier = verifyAccessJwt) {
       .all();
     return c.json({ items: result.results });
   });
+  app.route('/api/v1', productRoutes);
   app.notFound((c) =>
     c.req.path.startsWith('/api/')
       ? problem(c, 404, 'Not Found', 'The requested API resource does not exist.')
