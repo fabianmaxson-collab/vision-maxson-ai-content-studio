@@ -61,3 +61,7 @@ The Owner manually verified the deployed staging UI and API:
 Production and `vision.directormaxson.com` were not modified or deployed. Workers `m` and `mm`, Cloudflare Access configuration, DNS and SSL/TLS were not modified. No Phase 3 resource or functionality was created.
 
 Phase 2 satisfies its exit criteria and is formally **COMPLETED**.
+
+## Post-closeout global language decision
+
+ADR-005 records the approved Spanish-first UI and review policy for future phases. Project/output language remains independent. This documentation decision does not alter the completed Phase 2 implementation and does not begin Phase 3.
