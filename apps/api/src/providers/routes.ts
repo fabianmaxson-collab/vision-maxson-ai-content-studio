@@ -37,7 +37,7 @@ export function createProviderAdminRoutes(factory: ConnectivityAdapterFactory = 
     });
     const at = new Date().toISOString();
     await c.env.DB.prepare(
-      "INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,reason,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,reason,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
       .bind(
         newId('audit'),
