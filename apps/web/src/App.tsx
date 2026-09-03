@@ -8,7 +8,7 @@ type Catalogs = {
   strategyDefaults: Array<{
     id: string;
     platform: string;
-    contentFormato: string;
+    contentFormat: string;
     priority: number;
     preferredMinSeconds: number | null;
     preferredMaxSeconds: number | null;
@@ -497,12 +497,12 @@ export function App() {
               {catalogs.data?.strategyDefaults.map((s) => (
                 <article key={s.id}>
                   <span>
-                    {s.contentFormato} · priority {s.priority}
+                    {s.contentFormat} · prioridad {s.priority}
                   </span>
                   <h3>{s.platform}</h3>
                   <p>
                     {s.preferredMinSeconds
-                      ? `${s.preferredMinSeconds}–${s.preferredMaxSeconds} sec internal preference`
+                      ? `${s.preferredMinSeconds}–${s.preferredMaxSeconds} s de preferencia interna`
                       : 'Sin preferencia de duración configurada'}
                   </p>
                   <small>{s.rationale}</small>
