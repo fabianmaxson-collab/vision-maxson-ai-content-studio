@@ -6,6 +6,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { secureHeaders } from 'hono/secure-headers';
 import { productRoutes } from './product/routes';
 import { editorialRoutes } from './editorial/routes';
+import { createProviderAdminRoutes, type ConnectivityAdapterFactory } from './providers/routes';
 
 export interface Bindings {
   ENVIRONMENT: 'local' | 'preview' | 'staging' | 'production';
@@ -18,6 +19,7 @@ export interface Bindings {
   TOKEN_ENCRYPTION_KEY: string;
   OPENAI_API_KEY?: string;
   OPENAI_PROVIDER_ENABLED?: 'true' | 'false';
+  AI_PROVIDER_CONNECTIVITY_DIAGNOSTIC_ENABLED?: 'true' | 'false';
   OPENAI_API_BASE_URL?: string;
   DB: D1Database;
   ASSETS: Fetcher;
@@ -186,7 +188,10 @@ const requirePermission =
       ? next()
       : problem(c, 403, 'Forbidden', 'The current user does not have this permission.');
 
-export function createApp(verifyIdentity: IdentityVerifier = verifyAccessJwt) {
+export function createApp(
+  verifyIdentity: IdentityVerifier = verifyAccessJwt,
+  connectivityAdapterFactory?: ConnectivityAdapterFactory,
+) {
   const app = new Hono<{ Bindings: Bindings; Variables: Vars }>();
   app.use('*', secureHeaders());
   app.use('/api/*', async (c, next) => {
@@ -351,6 +356,7 @@ export function createApp(verifyIdentity: IdentityVerifier = verifyAccessJwt) {
   });
   app.route('/api/v1', productRoutes);
   app.route('/api/v1', editorialRoutes);
+  app.route('/api/v1', createProviderAdminRoutes(connectivityAdapterFactory));
   app.notFound((c) =>
     c.req.path.startsWith('/api/')
       ? problem(c, 404, 'Not Found', 'The requested API resource does not exist.')

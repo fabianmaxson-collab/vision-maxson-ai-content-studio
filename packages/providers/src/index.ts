@@ -62,6 +62,22 @@ export interface AIProviderAdapter {
     request: AIExecutionRequest<TInput>,
   ): Promise<ProviderExecutionResult<TOutput>>;
 }
+export interface ProviderConnectivityRequest {
+  modelKey: string;
+  timeoutMs: number;
+  maxOutputTokens: number;
+  reasoningEffort: ReasoningEffort;
+}
+export interface ProviderConnectivityResult {
+  ok: true;
+  providerRequestId: string | null;
+  usage: ProviderUsage;
+  safeMetadata: Record<string, string | number | boolean | null>;
+}
+export interface ProviderConnectivityAdapter {
+  readonly providerKey: string;
+  checkConnectivity(request: ProviderConnectivityRequest): Promise<ProviderConnectivityResult>;
+}
 export class ProviderNotConfiguredError extends ProviderError {
   constructor() {
     super('AUTHENTICATION', false, 'No AI provider is configured.');

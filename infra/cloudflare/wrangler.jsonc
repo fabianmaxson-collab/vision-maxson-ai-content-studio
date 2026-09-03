@@ -24,6 +24,7 @@
     "APP_ORIGIN": "http://localhost:8787",
     "OWNER_BOOTSTRAP_ENABLED": "false",
     "OPENAI_PROVIDER_ENABLED": "false",
+    "AI_PROVIDER_CONNECTIVITY_DIAGNOSTIC_ENABLED": "false",
     "OPENAI_API_BASE_URL": "https://api.openai.com/v1",
   },
   "d1_databases": [
@@ -47,6 +48,7 @@
         "APP_ORIGIN": "http://localhost:8787",
         "OWNER_BOOTSTRAP_ENABLED": "false",
         "OPENAI_PROVIDER_ENABLED": "false",
+        "AI_PROVIDER_CONNECTIVITY_DIAGNOSTIC_ENABLED": "false",
         "OPENAI_API_BASE_URL": "https://api.openai.com/v1",
       },
       "d1_databases": [
@@ -70,6 +72,7 @@
         "APP_ORIGIN": "http://localhost:8787",
         "OWNER_BOOTSTRAP_ENABLED": "false",
         "OPENAI_PROVIDER_ENABLED": "false",
+        "AI_PROVIDER_CONNECTIVITY_DIAGNOSTIC_ENABLED": "false",
         "OPENAI_API_BASE_URL": "https://api.openai.com/v1",
       },
     },
@@ -91,6 +94,7 @@
         "APP_ORIGIN": "https://staging.vision.directormaxson.com",
         "OWNER_BOOTSTRAP_ENABLED": "false",
         "OPENAI_PROVIDER_ENABLED": "false",
+        "AI_PROVIDER_CONNECTIVITY_DIAGNOSTIC_ENABLED": "false",
         "OPENAI_API_BASE_URL": "https://api.openai.com/v1",
       },
       "d1_databases": [

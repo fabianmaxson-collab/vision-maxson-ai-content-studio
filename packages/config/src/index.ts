@@ -24,6 +24,10 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  AI_PROVIDER_CONNECTIVITY_DIAGNOSTIC_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   OPENAI_API_BASE_URL: z.string().url().default('https://api.openai.com/v1'),
 });
 

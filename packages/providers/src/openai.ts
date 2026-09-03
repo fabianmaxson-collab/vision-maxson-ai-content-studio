@@ -2,6 +2,9 @@ import OpenAI from 'openai';
 import {
   type AIExecutionRequest,
   type AIProviderAdapter,
+  type ProviderConnectivityAdapter,
+  type ProviderConnectivityRequest,
+  type ProviderConnectivityResult,
   type ModelCapability,
   ProviderError,
   type ProviderExecutionResult,
@@ -23,7 +26,12 @@ export function mapOpenAIError(error: unknown): ProviderError {
   const safe = 'OpenAI request failed.';
   if (value.name === 'AbortError' || value.name === 'APITimeoutError')
     return new ProviderError('TIMEOUT', true, safe);
-  if (value.status === 429) return new ProviderError('RATE_LIMIT', true, safe);
+  if (value.status === 429)
+    return new ProviderError(
+      'RATE_LIMIT',
+      value.code !== 'insufficient_quota',
+      value.code === 'insufficient_quota' ? 'quota_or_billing_failure' : safe,
+    );
   if (value.status === 401 || value.status === 403)
     return new ProviderError('AUTHENTICATION', false, safe);
   if (value.status === 404) return new ProviderError('UNAVAILABLE', false, safe);
@@ -31,7 +39,7 @@ export function mapOpenAIError(error: unknown): ProviderError {
   if (value.code === 'content_filter') return new ProviderError('SAFETY_REFUSAL', false, safe);
   return new ProviderError('PERMANENT', false, safe);
 }
-export class OpenAIResponsesAdapter implements AIProviderAdapter {
+export class OpenAIResponsesAdapter implements AIProviderAdapter, ProviderConnectivityAdapter {
   readonly providerKey = 'openai';
   private readonly client: ResponsesClient;
   constructor(apiKey: string, baseURL = 'https://api.openai.com/v1', client?: ResponsesClient) {
@@ -42,6 +50,37 @@ export class OpenAIResponsesAdapter implements AIProviderAdapter {
   }
   health() {
     return Promise.resolve<'available'>('available');
+  }
+  async checkConnectivity(
+    request: ProviderConnectivityRequest,
+  ): Promise<ProviderConnectivityResult> {
+    const result = await this.execute<Record<string, never>, { ok: boolean }>({
+      runId: 'connectivity-check',
+      taskType: 'PROVIDER_CONNECTIVITY',
+      modelKey: request.modelKey,
+      promptVersionId: 'connectivity-v1',
+      input: {},
+      instructions: 'Return the requested connectivity result.',
+      outputSchema: {
+        type: 'object',
+        properties: { ok: { type: 'boolean', const: true } },
+        required: ['ok'],
+        additionalProperties: false,
+      },
+      outputSchemaName: 'provider_connectivity',
+      idempotencyKey: 'connectivity-check',
+      timeoutMs: request.timeoutMs,
+      maxOutputTokens: request.maxOutputTokens,
+      reasoningEffort: request.reasoningEffort,
+    });
+    if (result.output.ok !== true)
+      throw new ProviderError('INVALID_RESPONSE', false, 'Provider returned an invalid result.');
+    return {
+      ok: true,
+      providerRequestId: result.providerRequestId,
+      usage: result.usage,
+      safeMetadata: result.safeMetadata,
+    };
   }
   async execute<TInput, TOutput>(
     request: AIExecutionRequest<TInput>,
