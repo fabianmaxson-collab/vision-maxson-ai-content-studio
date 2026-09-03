@@ -1,6 +1,6 @@
 # Phase 3 — AI Intelligence & Editorial Planning Core
 
-Status: **LOCAL PRE-MIGRATION / PRE-DEPLOYMENT CANDIDATE VERIFIED**
+Status: **PHASE 3 CORE — STAGING VALIDATED**
 
 Owner decision date: 2026-09-03.
 
@@ -31,10 +31,39 @@ Research
 
 `READY_FOR_GENERATION` remains derived while `project.status` is `PREFLIGHT_REVIEW`; it is not a competing canonical status.
 
-## Current boundary
+## Staging validation
 
-Migration 0002 has been applied only to disposable local state. Remote staging D1, staging traffic, Cloudflare resources and production remain unchanged. The next approval boundary is remote staging D1 migration 0002 only, followed by a separate staging Worker deployment authorization. Phase 4 has not started.
+The Owner completed authenticated desktop validation against `https://staging.vision.directormaxson.com/` on 2026-09-03.
+
+- Worker: `vision-maxson-ai-content-studio`
+- Active version: `331fe174-0e94-4db2-9fbe-5294777d5bb2`
+- Deployment: `d00a96e7-42a4-46de-900b-8150a110b2e8`
+- Traffic: 100% staging
+
+The application renders correctly and the previous blank-screen React runtime issue is resolved. The Spanish-first interface, navigation and **Inteligencia IA** load correctly; D1 reports `ready`; the Owner session is active; and no fabricated projects or content appear.
+
+The visible editorial stages are Resumen, Investigación, Ideas, Brief, Guion, Storyboard and Preflight. The project selector contains no fabricated project. The UI truthfully reports **Proveedor de IA no configurado**.
+
+Authenticated API validation passed:
+
+- `GET /api/v1/health`: `status=ok`, `service=vision-maxson-api`, `environment=staging`.
+- `GET /api/v1/me`: `visionmaxson@gmail.com`, role `owner`, workspace `workspace_primary`, `environment=staging`, `database=ready`.
+- `GET /api/v1/ai/catalog`: `configured=false`, `items=[]`.
+
+The empty AI catalog is intentional because no real AI provider is connected.
+
+## Remaining completion gates
+
+This desktop staging PASS validates **Phase 3 Core**, but Phase 3 is not formally `COMPLETED`. Completion still requires:
+
+- integration of an explicitly approved real AI provider;
+- authenticated staging validation using real AI output through the representative editorial flow to derived `READY_FOR_GENERATION`;
+- Preview TTS validation on a legitimate real, manually authored or imported editorial artifact.
+
+Responsive real-device validation remains a separate validation item and does not invalidate the desktop staging PASS. Phase 4 has not started.
 
 ## Discoverable future-phase decisions
 
 ADRs 008–010 record Owner-approved future production behavior: bounded autonomy and dynamic resource routing; device-independent cloud execution and responsive/mobile control; and generation supervision, protected clip edits, creative learning, decision provenance and low-noise notifications. They are documentation-only and do not expand the Phase 3 implementation or authorize infrastructure, providers, migration or deployment.
+
+ADR-011 records the Owner-approved future project download, managed local ingest and storage-retention lifecycle. It is documentation-only and explicitly supersedes the Master Specification V1.1 general Final Master minimum with configurable 14/30-day defaults while preserving longer KEEP/PRESERVE/LOCKED policies.
