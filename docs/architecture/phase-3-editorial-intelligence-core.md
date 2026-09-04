@@ -30,6 +30,10 @@ Until an Owner approves and configures a real provider, AI commands return a cle
 
 The web UI defaults and falls back to Spanish. `ui_locale` and `review_locale` remain independent of project `content_language`. Production scripts retain their actual language; Spanish review artifacts link to the exact source script version and never replace it. Review Read-Aloud uses browser `SpeechSynthesis`, selects voices from the artifact language, stores no audio and makes no backend or ElevenLabs call.
 
+## Publishable media invariant
+
+ADR-012 records the permanent cross-cutting rule for future image/video work: only media explicitly classified as `PUBLISHABLE`, with known provenance and rights and no visible third-party watermark, may enter final editing, export, delivery or publishing. Watermark removal or concealment is prohibited; unknown status fails closed. Phase 3 introduces no media pipeline or migration for this future requirement.
+
 ## Security
 
 All Phase 3 API routes inherit Cloudflare Access verification, same-origin mutation protection, D1-backed provisioning, server-side RBAC and workspace isolation. Inputs use bounded Zod contracts, mutations use optimistic version checks where applicable, and business audit events contain identifiers and safe metadata rather than full editorial payloads.
