@@ -23,7 +23,13 @@ Require clean main, `main == origin/main`, green CI, and the full source SHA. Cr
 
     pnpm staging:candidate -- <SOURCE_SHA>
 
-Append `--enable-openai-connectivity` only for an Owner-approved connectivity candidate. Record its Version ID and inspect it with `wrangler versions view <VERSION_ID> --json`. Verify SHA, environment, D1, secret names, and flags without reading secret values.
+Candidate modes are explicit and mutually exclusive:
+
+- No mode creates the normal safe candidate with OpenAI disabled and the diagnostic disabled.
+- `--openai-operational` creates a production-like staging candidate with OpenAI enabled and the diagnostic disabled.
+- `--enable-openai-connectivity` creates an extraordinary test-only candidate with OpenAI and the diagnostic enabled.
+
+After successful connectivity validation, use `--openai-operational`; do not leave staging in connectivity-testing mode. Unsupported or combined modes are rejected. Record the candidate Version ID and inspect it with `wrangler versions view <VERSION_ID> --json`. Verify SHA, environment, D1, secret names, and flags without reading secret values.
 
 After Owner approval, promote only the exact version:
 

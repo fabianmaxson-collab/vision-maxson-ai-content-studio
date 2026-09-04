@@ -9,6 +9,21 @@ if (!pkg.scripts['dry-run:staging'].includes('--dry-run'))
 if (/wrangler\s+(?:versions\s+)?deploy/u.test(workflow)) throw new Error('CI must not deploy');
 if (!/'versions'\s*,\s*'upload'/u.test(candidate))
   throw new Error('Candidate must use versions upload');
+if (/'versions'\s*,\s*'deploy'|wrangler\s+(?:versions\s+)?deploy/u.test(candidate))
+  throw new Error('Candidate must never deploy or promote traffic');
+const candidateModeRequirements = [
+  "default: { providerEnabled: 'false', diagnosticEnabled: 'false' }",
+  "'--openai-operational': { providerEnabled: 'true', diagnosticEnabled: 'false' }",
+  "'--enable-openai-connectivity': { providerEnabled: 'true', diagnosticEnabled: 'true' }",
+  "'OPENAI_PROVIDER_ENABLED:' + flags.providerEnabled",
+  "'AI_PROVIDER_CONNECTIVITY_DIAGNOSTIC_ENABLED:' + flags.diagnosticEnabled",
+];
+for (const requirement of candidateModeRequirements) {
+  if (!candidate.includes(requirement))
+    throw new Error('Candidate mode safety requirement missing: ' + requirement);
+}
+if (!candidate.includes("if (flags === undefined) throw new Error('Unsupported candidate mode')"))
+  throw new Error('Candidate must reject unsupported flag combinations');
 if (!/'versions'\s*,\s*'deploy'/u.test(promote))
   throw new Error('Promotion must use versions deploy');
 console.log('Deployment safety checks passed');
