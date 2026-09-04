@@ -19,6 +19,12 @@ import {
 } from '@vision-maxson/providers';
 import { OpenAIResponsesAdapter } from '@vision-maxson/providers/openai';
 import { taskPolicy } from '@vision-maxson/providers/policy';
+import {
+  conservativeInputTokenUpperBound,
+  isBoundedProfileStep,
+  phase3ShortEnReviewEsProfile,
+} from '@vision-maxson/providers/execution-profile';
+import { calculateReservation, loadBoundedEnvelope, reservationStatement } from './budget';
 import { z } from 'zod';
 import type { EditorialActor } from './repository';
 
@@ -153,7 +159,13 @@ export class EditorialExecutionService {
     }
     if (!this.config.openAIEnabled || !this.config.openAIApiKey)
       throw new ProviderNotConfiguredError();
-    const project = await this.projectContext(projectId);
+    const project = await this.projectContext(projectId, task, command.inputArtifactVersionId);
+    if (task === 'SCRIPT_WRITER_SHORT' && project.format !== 'SHORT')
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'The short-script route requires a SHORT project.',
+      );
     const prompt = await this.db
       .prepare(
         `SELECT pv.id,pv.template_text AS templateText,pd.key FROM prompt_versions pv JOIN prompt_definitions pd ON pd.id=pv.prompt_definition_id WHERE pd.key=? AND pd.status='active' AND pv.status='active' ORDER BY pv.version_number DESC LIMIT 1`,
@@ -164,7 +176,7 @@ export class EditorialExecutionService {
       throw new ProviderError('PERMANENT', false, 'Active prompt version is unavailable.');
     const modelRows = await this.db
       .prepare(
-        `SELECT p.id AS providerId,p.key AS providerKey,m.id AS modelId,m.model_key AS modelKey,m.capabilities_json AS capabilitiesJson,m.status,ps.id AS pricingSnapshotId,ps.input_unit_price AS inputPrice,ps.output_unit_price AS outputPrice,ps.currency FROM ai_providers p JOIN ai_provider_models m ON m.provider_id=p.id LEFT JOIN ai_pricing_snapshots ps ON ps.provider_model_id=m.id AND ps.effective_to IS NULL WHERE p.status='configured' AND m.status='available'`,
+        `SELECT p.id AS providerId,p.key AS providerKey,m.id AS modelId,m.model_key AS modelKey,m.capabilities_json AS capabilitiesJson,m.status,ps.id AS pricingSnapshotId,ps.input_unit_price AS inputPrice,ps.output_unit_price AS outputPrice,ps.currency,ps.unit_name AS unitName,ps.verification_status AS verificationStatus,ps.effective_from AS effectiveFrom,ps.effective_to AS effectiveTo FROM ai_providers p JOIN ai_provider_models m ON m.provider_id=p.id LEFT JOIN ai_pricing_snapshots ps ON ps.provider_model_id=m.id AND ps.effective_to IS NULL WHERE p.status='configured' AND m.status='available'`,
       )
       .all<Row>();
     const candidates = modelRows.results.map((row) => {
@@ -178,7 +190,9 @@ export class EditorialExecutionService {
         costRank: Number(cfg.costRank),
       } satisfies ModelCandidate;
     });
-    const policy = taskPolicy(task);
+    const economyEligible =
+      isBoundedProfileStep(task) && this.isProfileProjectEligible(project, task);
+    const policy = taskPolicy(task, { economyEligible });
     const selected = routeModel(candidates, {
       mode: command.mode,
       requiredCapabilities: policy.requiredCapabilities,
@@ -191,10 +205,50 @@ export class EditorialExecutionService {
     const selectedRow = modelRows.results.find(
       (row) => row.providerKey === selected.providerKey && row.modelKey === selected.modelKey,
     )!;
+    const boundedStep =
+      isBoundedProfileStep(task) && selected.modelKey === phase3ShortEnReviewEsProfile.modelKey;
+    if (boundedStep && command.creativeRegeneration)
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'Creative regeneration is not allowed by the execution profile.',
+      );
+    const stepPolicy = boundedStep ? phase3ShortEnReviewEsProfile.steps[task] : policy;
+    const providerInput = boundedStep
+      ? {
+          ...project,
+          executionProfile: {
+            key: phase3ShortEnReviewEsProfile.key,
+            externalResearchAllowed: false,
+            specializedVerificationAllowed: false,
+            humanReviewRequired: true,
+            reviewTranslationIsReviewOnly: true,
+          },
+        }
+      : project;
+    const providerInstructions = renderPrompt(prompt.templateText, providerInput);
+    const providerOutputSchema = z.toJSONSchema(outputSchema[task]);
+    if (
+      boundedStep &&
+      conservativeInputTokenUpperBound({
+        instructions: providerInstructions,
+        input: providerInput,
+        outputSchema: providerOutputSchema,
+      }) > phase3ShortEnReviewEsProfile.steps[task].inputTokenCeiling
+    )
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'Provider-bound input exceeds the execution profile ceiling.',
+      );
+    const envelope = boundedStep
+      ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected)
+      : null;
+    const reservedMicrousd = boundedStep ? calculateReservation(selectedRow, task) : null;
     const runId = newId('intelligence_run'),
       at = now();
     const regeneration = command.creativeRegeneration ? 1 : 0;
-    await this.db
+    const insertRun = this.db
       .prepare(
         `INSERT OR IGNORE INTO intelligence_runs(id,workspace_id,project_id,task_type,provider_id,provider_model_id,prompt_version_id,input_artifact_version_id,initiated_by,operating_mode,status,idempotency_key,creative_regeneration_number,safe_metadata_json,pricing_snapshot_id,created_at,updated_at,version) VALUES(?,?,?,?,?,?,?,?,?,?,'QUEUED',?,?,?, ?,?,?,1)`,
       )
@@ -215,15 +269,55 @@ export class EditorialExecutionService {
         selectedRow.pricingSnapshotId ?? null,
         at,
         at,
-      )
-      .run();
+      );
+    if (boundedStep && envelope && reservedMicrousd !== null) {
+      try {
+        await this.db.batch([
+          insertRun,
+          reservationStatement(this.db, {
+            envelopeId: String(envelope.id),
+            workspaceId: this.actor.workspaceId,
+            projectId,
+            runId,
+            step: task,
+            pricingSnapshotId: String(selectedRow.pricingSnapshotId),
+            reservedMicrousd,
+            at,
+          }),
+        ]);
+        await this.db
+          .prepare(
+            `UPDATE editorial_execution_envelopes SET status='CONSUMED',updated_at=?,version=version+1 WHERE id=? AND status='ACTIVE' AND (SELECT COUNT(*) FROM editorial_execution_reservations WHERE envelope_id=?) >= maximum_calls`,
+          )
+          .bind(now(), envelope.id, envelope.id)
+          .run();
+      } catch {
+        const winner = await this.existingRun(idempotencyKey);
+        if (winner && this.commandHash(winner) === commandHash)
+          return { run: winner, idempotentReplay: true };
+        throw new ProviderError(
+          'UNAVAILABLE',
+          false,
+          'The execution step could not be reserved atomically.',
+        );
+      }
+    } else await insertRun.run();
     const reserved = await this.db
       .prepare(
-        `SELECT id,status,output_artifact_version_id AS outputArtifactVersionId FROM intelligence_runs WHERE workspace_id=? AND idempotency_key=?`,
+        `SELECT id,status,output_artifact_version_id AS outputArtifactVersionId,safe_metadata_json AS safeMetadataJson FROM intelligence_runs WHERE workspace_id=? AND idempotency_key=?`,
       )
       .bind(this.actor.workspaceId, idempotencyKey)
       .first<Row>();
-    if (!reserved || reserved.id !== runId) return { run: reserved, idempotentReplay: true };
+    if (!reserved) throw new ProviderError('PERMANENT', false, 'Reserved run could not be read.');
+    if (reserved.id !== runId) {
+      if (this.commandHash(reserved) !== commandHash)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Idempotency key is already bound to a different command.',
+        );
+      return { run: reserved, idempotentReplay: true };
+    }
     const adapter = new OpenAIResponsesAdapter(this.config.openAIApiKey, this.config.openAIBaseUrl);
     const observer = this.observer(runId);
     const started = Date.now();
@@ -233,21 +327,21 @@ export class EditorialExecutionService {
         unknown
       >({
         candidate: selected,
-        maximumAttempts: policy.maximumAttempts,
+        maximumAttempts: stepPolicy.maximumAttempts,
         observer,
         request: {
           runId,
           taskType: task,
           modelKey: selected.modelKey,
           promptVersionId: prompt.id,
-          input: project,
-          instructions: renderPrompt(prompt.templateText, project),
-          outputSchema: z.toJSONSchema(outputSchema[task]),
+          input: providerInput,
+          instructions: providerInstructions,
+          outputSchema: providerOutputSchema,
           outputSchemaName: prompt.key,
           idempotencyKey,
-          timeoutMs: policy.timeoutMs,
-          maxOutputTokens: policy.maxOutputTokens,
-          reasoningEffort: policy.reasoningEffort,
+          timeoutMs: stepPolicy.timeoutMs,
+          maxOutputTokens: stepPolicy.maxOutputTokens,
+          reasoningEffort: stepPolicy.reasoningEffort,
         },
       });
       const parsed = outputSchema[task].safeParse(result.output);
@@ -271,6 +365,20 @@ export class EditorialExecutionService {
         parsed.data,
         { result, costs, metadata },
       );
+      if (boundedStep)
+        await this.db
+          .prepare(
+            `UPDATE editorial_execution_reservations SET status='RECONCILED',actual_microusd=?,reconciled_at=? WHERE intelligence_run_id=? AND status='DISPATCHED'`,
+          )
+          .bind(
+            Math.ceil(
+              (costs.actualCost ?? reservedMicrousd ?? 0) *
+                (costs.actualCost === null ? 1 : 1_000_000),
+            ),
+            now(),
+            runId,
+          )
+          .run();
       return {
         run: {
           id: runId,
@@ -283,6 +391,13 @@ export class EditorialExecutionService {
       };
     } catch (error) {
       const mapped = safeError(error);
+      if (boundedStep)
+        await this.db
+          .prepare(
+            `UPDATE editorial_execution_reservations SET status='AMBIGUOUS' WHERE intelligence_run_id=? AND status IN ('RESERVED','DISPATCHED')`,
+          )
+          .bind(runId)
+          .run();
       await this.db
         .prepare(
           `UPDATE intelligence_runs SET status=?,error_category=?,safe_error_detail=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
@@ -431,7 +546,7 @@ export class EditorialExecutionService {
       .run();
     return { id: runId, status: 'CANCELLED' };
   }
-  private async projectContext(projectId: string) {
+  private async projectContext(projectId: string, task: Task, inputVersionId: string | null) {
     const project = await this.db
       .prepare(
         `SELECT p.id,p.title,p.description,p.format,p.operating_mode AS operatingMode,p.primary_language AS primaryLanguage,b.name AS brandName,b.niche,c.name AS channelName,c.narrative_tone AS narrativeTone,c.editorial_strategy_json AS editorialStrategyJson FROM projects p JOIN content_brands b ON b.id=p.content_brand_id JOIN channel_profiles c ON c.id=p.channel_profile_id WHERE p.id=? AND p.workspace_id=? AND p.deleted_at IS NULL`,
@@ -445,15 +560,31 @@ export class EditorialExecutionService {
       )
       .bind(projectId, this.actor.workspaceId)
       .all<Row>();
+    let exactSource: Row | null = null;
+    if (task === 'REVIEW_TRANSLATION_ES') {
+      if (!inputVersionId)
+        throw new ProviderError('PERMANENT', false, 'An exact source script version is required.');
+      exactSource = await this.db
+        .prepare(
+          `SELECT v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson,a.artifact_type AS artifactType FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id WHERE v.id=? AND v.workspace_id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='PRODUCTION_SCRIPT' AND v.language_code='en' AND a.status='approved' AND a.deleted_at IS NULL`,
+        )
+        .bind(inputVersionId, this.actor.workspaceId, this.actor.workspaceId, projectId)
+        .first<Row>();
+      if (!exactSource)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The exact current approved production script is required.',
+        );
+    }
     return {
       ...project,
       reviewLocale: 'es',
+      exactSource,
       approvedArtifacts: artifacts.results.map((item) => ({
         ...item,
-        contentText:
-          typeof item.contentText === 'string' ? item.contentText.slice(0, 100000) : null,
-        contentJson:
-          typeof item.contentJson === 'string' ? item.contentJson.slice(0, 100000) : null,
+        contentText: typeof item.contentText === 'string' ? item.contentText : null,
+        contentJson: typeof item.contentJson === 'string' ? item.contentJson : null,
       })),
     } as unknown as Row & {
       operatingMode: string;
@@ -462,10 +593,58 @@ export class EditorialExecutionService {
       approvedArtifacts: Row[];
     };
   }
+  private commandHash(row: Row) {
+    if (typeof row.safeMetadataJson !== 'string') return null;
+    try {
+      return (JSON.parse(row.safeMetadataJson) as Row).commandHash;
+    } catch {
+      return null;
+    }
+  }
+  private existingRun(idempotencyKey: string) {
+    return this.db
+      .prepare(
+        `SELECT id,status,output_artifact_version_id AS outputArtifactVersionId,safe_metadata_json AS safeMetadataJson FROM intelligence_runs WHERE workspace_id=? AND idempotency_key=?`,
+      )
+      .bind(this.actor.workspaceId, idempotencyKey)
+      .first<Row>();
+  }
+  private isProfileProjectEligible(project: Row, task: Task) {
+    if (
+      project.format !== 'SHORT' ||
+      project.operatingMode !== 'ASSISTED' ||
+      project.primaryLanguage !== 'en' ||
+      project.reviewLocale !== 'es'
+    )
+      return false;
+    if (task === 'SCRIPT_WRITER_SHORT') {
+      const brief = (project.approvedArtifacts as Row[]).find(
+        (item) => item.artifactType === 'CONTENT_BRIEF',
+      );
+      if (!brief || typeof brief.contentJson !== 'string') return false;
+      try {
+        const content = JSON.parse(brief.contentJson) as Row;
+        return (
+          content.format === 'SHORT' &&
+          content.productionLanguage === 'en' &&
+          content.reviewLanguage === 'es'
+        );
+      } catch {
+        return false;
+      }
+    }
+    return task === 'REVIEW_TRANSLATION_ES' && project.exactSource !== null;
+  }
   private observer(runId: string) {
     return {
       started: async (attempt: number) => {
         const at = now();
+        await this.db
+          .prepare(
+            `UPDATE editorial_execution_reservations SET status='DISPATCHED',dispatched_at=? WHERE intelligence_run_id=? AND status='RESERVED'`,
+          )
+          .bind(at, runId)
+          .run();
         await this.db.batch([
           this.db
             .prepare(

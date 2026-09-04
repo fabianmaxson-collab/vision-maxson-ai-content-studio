@@ -192,6 +192,7 @@ export const intelligenceCommandSchema = z
     inputArtifactVersionId: id.nullable().default(null),
     creativeRegeneration: z.boolean().default(false),
   })
+  .strict()
   .superRefine((value, context) => {
     if (value.mode === 'LOCKED' && (!value.preferredProviderKey || !value.preferredModelKey))
       context.addIssue({ code: 'custom', message: 'LOCKED requires provider and model' });

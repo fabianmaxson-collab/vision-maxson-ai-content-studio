@@ -8,6 +8,9 @@ export interface TaskExecutionPolicy {
   maxOutputTokens: number;
   maximumAttempts: number;
 }
+export interface TaskPolicyContext {
+  economyEligible?: boolean;
+}
 export const defaultTaskPolicies: Readonly<Record<string, TaskExecutionPolicy>> = {
   TOPIC_RESEARCH: {
     requiredCapabilities: ['STRUCTURED_OUTPUT', 'RESEARCH_SYNTHESIS'],
@@ -74,11 +77,13 @@ export const defaultTaskPolicies: Readonly<Record<string, TaskExecutionPolicy>> 
     maximumAttempts: 2,
   },
 };
-export function taskPolicy(
-  taskType: string,
-  overrides: Partial<TaskExecutionPolicy> = {},
-): TaskExecutionPolicy {
+export function taskPolicy(taskType: string, context: TaskPolicyContext = {}): TaskExecutionPolicy {
   const base = defaultTaskPolicies[taskType];
   if (!base) throw new Error('unsupported_intelligence_task');
-  return { ...base, ...overrides };
+  if (
+    context.economyEligible &&
+    ['IDEA_GENERATION', 'SCRIPT_WRITER_SHORT', 'REVIEW_TRANSLATION_ES'].includes(taskType)
+  )
+    return { ...base, minimumQualityTier: 'ECONOMY' };
+  return { ...base };
 }

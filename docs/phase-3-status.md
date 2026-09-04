@@ -68,3 +68,11 @@ ADRs 008–010 record Owner-approved future production behavior: bounded autonom
 
 ADR-011 records the Owner-approved future project download, managed local ingest and storage-retention lifecycle. It is documentation-only and explicitly supersedes the Master Specification V1.1 general Final Master minimum with configurable 14/30-day defaults while preserving longer KEEP/PRESERVE/LOCKED policies.
 ADR-012 records the permanent publishable-media invariant for all future image/video generation and acquisition: visible third-party watermarks may never be removed or concealed, unknown provenance/rights/watermark status fails closed, and only explicitly `PUBLISHABLE` assets may enter final export or publication. It is documentation-only in Phase 3; the dedicated media-asset/provenance model and server-side export gate remain mandatory before future media production work.
+
+## Bounded editorial execution hardening
+
+The server-owned profile `phase3_short_en_review_es_v1` authorizes only an assisted English SHORT production script and its Spanish review translation. It requires an approved current content brief, exact current approved production-script provenance for translation, one technical attempt per step, no fallback or creative regeneration, and durable reservation before provider dispatch. LONG-form script routing remains required Phase 3 work and the SHORT endpoint rejects LONG_FORM projects.
+
+When exact provider tokenization is unavailable, the pre-dispatch input bound is the UTF-8 byte length of the complete provider-bound serialization (instructions, rendered prompt/context, approved artifacts, content and structured-output schema) plus 1,024 tokens for provider framing. UTF-8 bytes conservatively upper-bound tokens; content is rejected rather than truncated when the 8,192-token step ceiling cannot be proven. Monetary reservations use integer micro-USD with upward rounding and a 25% input-price safety premium. Only current, complete USD-per-token pricing marked `owner_approved` or `externally_verified` is accepted.
+
+Cloudflare D1 error 7403 must not be worked around by changing credentials. Under separate remote authorization, first run `wrangler whoami`, verify that the selected account is the intended Vision Maxson account, and only then use a read-only remote `SELECT 1`. No remote D1 command is part of this local slice.

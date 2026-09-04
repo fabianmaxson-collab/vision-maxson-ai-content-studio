@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./execution-profile": "./src/execution-profile.ts",
     "./openai": "./src/openai.ts",
     "./policy": "./src/policy.ts"
   },

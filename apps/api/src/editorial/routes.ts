@@ -9,6 +9,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import type { Bindings } from '../app';
 import { ProviderError } from '@vision-maxson/providers';
 import { EditorialExecutionService } from './execution';
+import { authorizePhase3Envelope } from './budget';
 import { EditorialRepository, type EditorialActor } from './repository';
 import type { z } from 'zod';
 
@@ -40,12 +41,18 @@ const requirePermission =
     hasPermission(c.get('user').roles, permission)
       ? next()
       : problem(c, 403, 'Forbidden', 'The current user does not have this permission.');
-async function audit(c: Context<Env>, action: string, resourceType: string, resourceId: string) {
+async function audit(
+  c: Context<Env>,
+  action: string,
+  resourceType: string,
+  resourceId: string,
+  metadata: Record<string, unknown> = {},
+) {
   const user = c.get('user'),
     identity = c.get('identity'),
     at = new Date().toISOString();
   await c.env.DB.prepare(
-    `INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,?,?,?,'success',?,?, '{}',?,?)`,
+    `INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,?,?,?,'success',?,?,?,?,?)`,
   )
     .bind(
       newId('audit'),
@@ -59,6 +66,7 @@ async function audit(c: Context<Env>, action: string, resourceType: string, reso
       resourceId,
       c.get('requestId'),
       c.env.ENVIRONMENT,
+      JSON.stringify(metadata),
       at,
       at,
     )
@@ -153,6 +161,52 @@ editorialRoutes.post(
     }
   },
 );
+editorialRoutes.post(
+  '/admin/projects/:projectId/editorial-execution-envelopes/phase3_short_en_review_es_v1',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const body: unknown = await c.req.json().catch(() => ({}));
+    if (typeof body !== 'object' || body === null || Object.keys(body).length !== 0)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'This authorization endpoint accepts no budget overrides.',
+      );
+    try {
+      const result = await authorizePhase3Envelope(
+        c.env.DB,
+        c.get('user'),
+        c.req.param('projectId'),
+      );
+      if (!result.idempotent)
+        await audit(
+          c,
+          'editorial.execution_envelope_authorized',
+          'editorial_execution_envelope',
+          String(result.envelope.id),
+          {
+            profileKey: 'phase3_short_en_review_es_v1',
+            projectId: c.req.param('projectId'),
+            providerKey: 'openai',
+            modelKey: 'gpt-5.6-luna',
+            maximumCalls: 2,
+            monetaryCeilingMicrousd: 7000,
+            currency: 'USD',
+          },
+        );
+      return c.json(result, result.idempotent ? 200 : 201);
+    } catch (error) {
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        error instanceof Error ? error.message : 'execution_envelope_authorization_failed',
+      );
+    }
+  },
+);
+
 type IntelligenceTask = z.infer<typeof intelligenceTaskSchema>;
 const taskRoutes: ReadonlyArray<readonly [string, IntelligenceTask]> = [
   ['/projects/:projectId/research/generate', 'TOPIC_RESEARCH'],
@@ -195,7 +249,8 @@ for (const [route, task] of taskRoutes)
         },
         idempotencyKey,
       );
-      await audit(c, 'intelligence.run_completed', 'intelligence_run', String(result.run?.id));
+      if (!result.idempotentReplay)
+        await audit(c, 'intelligence.run_completed', 'intelligence_run', String(result.run?.id));
       return c.json(result, result.idempotentReplay ? 200 : 201);
     } catch (error) {
       if (error instanceof ProviderError)

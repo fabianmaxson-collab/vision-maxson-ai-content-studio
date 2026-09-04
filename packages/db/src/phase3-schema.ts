@@ -309,3 +309,36 @@ export const aiPricingSnapshots = sqliteTable('ai_pricing_snapshots', {
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by'),
 });
+
+export const editorialExecutionEnvelopes = sqliteTable('editorial_execution_envelopes', {
+  id: text('id').primaryKey(),
+  workspaceId: text('workspace_id').notNull(),
+  projectId: text('project_id').notNull(),
+  profileKey: text('profile_key').notNull(),
+  profileVersion: integer('profile_version').notNull(),
+  providerId: text('provider_id').notNull(),
+  providerModelId: text('provider_model_id').notNull(),
+  currency: text('currency').notNull(),
+  monetaryCeilingMicrousd: integer('monetary_ceiling_microusd').notNull(),
+  maximumCalls: integer('maximum_calls').notNull(),
+  status: text('status').notNull(),
+  authorizedBy: text('authorized_by').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  version: integer('version').notNull(),
+});
+export const editorialExecutionReservations = sqliteTable('editorial_execution_reservations', {
+  id: text('id').primaryKey(),
+  envelopeId: text('envelope_id').notNull(),
+  workspaceId: text('workspace_id').notNull(),
+  projectId: text('project_id').notNull(),
+  intelligenceRunId: text('intelligence_run_id').notNull(),
+  stepKey: text('step_key').notNull(),
+  pricingSnapshotId: text('pricing_snapshot_id').notNull(),
+  reservedMicrousd: integer('reserved_microusd').notNull(),
+  actualMicrousd: integer('actual_microusd'),
+  status: text('status').notNull(),
+  createdAt: text('created_at').notNull(),
+  dispatchedAt: text('dispatched_at'),
+  reconciledAt: text('reconciled_at'),
+});
