@@ -43,22 +43,14 @@ CREATE TABLE editorial_execution_reservations (
 CREATE INDEX editorial_execution_reservations_envelope_idx
   ON editorial_execution_reservations(envelope_id,status);
 
-CREATE TRIGGER editorial_execution_reservation_scope_guard
-BEFORE INSERT ON editorial_execution_reservations
-BEGIN
-  SELECT CASE WHEN NOT EXISTS (
-    SELECT 1 FROM editorial_execution_envelopes e
-    WHERE e.id=NEW.envelope_id AND e.workspace_id=NEW.workspace_id AND e.project_id=NEW.project_id
-      AND e.status='ACTIVE'
-  ) THEN RAISE(ABORT,'execution_envelope_scope_or_status_invalid') END;
-  SELECT CASE WHEN (
-    SELECT COUNT(*) FROM editorial_execution_reservations r WHERE r.envelope_id=NEW.envelope_id
-  ) >= (
-    SELECT maximum_calls FROM editorial_execution_envelopes e WHERE e.id=NEW.envelope_id
-  ) THEN RAISE(ABORT,'execution_envelope_call_limit_exceeded') END;
-  SELECT CASE WHEN COALESCE((
-    SELECT SUM(r.reserved_microusd) FROM editorial_execution_reservations r WHERE r.envelope_id=NEW.envelope_id
-  ),0) + NEW.reserved_microusd > (
-    SELECT monetary_ceiling_microusd FROM editorial_execution_envelopes e WHERE e.id=NEW.envelope_id
-  ) THEN RAISE(ABORT,'execution_envelope_budget_exceeded') END;
-END;
+CREATE TRIGGER editorial_execution_reservation_scope_guard BEFORE INSERT ON editorial_execution_reservations
+WHEN NOT EXISTS (SELECT 1 FROM editorial_execution_envelopes e WHERE e.id=NEW.envelope_id AND e.workspace_id=NEW.workspace_id AND e.project_id=NEW.project_id AND e.status='ACTIVE')
+BEGIN SELECT RAISE(ABORT,'execution_envelope_scope_or_status_invalid'); END;
+
+CREATE TRIGGER editorial_execution_reservation_call_limit_guard BEFORE INSERT ON editorial_execution_reservations
+WHEN (SELECT COUNT(*) FROM editorial_execution_reservations r WHERE r.envelope_id=NEW.envelope_id) >= (SELECT maximum_calls FROM editorial_execution_envelopes e WHERE e.id=NEW.envelope_id)
+BEGIN SELECT RAISE(ABORT,'execution_envelope_call_limit_exceeded'); END;
+
+CREATE TRIGGER editorial_execution_reservation_budget_guard BEFORE INSERT ON editorial_execution_reservations
+WHEN COALESCE((SELECT SUM(r.reserved_microusd) FROM editorial_execution_reservations r WHERE r.envelope_id=NEW.envelope_id),0) + NEW.reserved_microusd > (SELECT monetary_ceiling_microusd FROM editorial_execution_envelopes e WHERE e.id=NEW.envelope_id)
+BEGIN SELECT RAISE(ABORT,'execution_envelope_budget_exceeded'); END;

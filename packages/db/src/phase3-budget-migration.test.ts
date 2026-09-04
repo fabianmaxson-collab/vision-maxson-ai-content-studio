@@ -27,6 +27,16 @@ describe('Phase 3 execution-budget migration contract', () => {
     expect(sql).toContain('execution_envelope_scope_or_status_invalid');
     expect(sql).toContain('execution_envelope_call_limit_exceeded');
     expect(sql).toContain('execution_envelope_budget_exceeded');
+    expect(sql).toContain('editorial_execution_reservation_call_limit_guard');
+    expect(sql).toContain('editorial_execution_reservation_budget_guard');
+  });
+  it('uses D1-safe single-statement trigger bodies', () => {
+    const triggers = [...sql.matchAll(/CREATE TRIGGER[\s\S]*?END;/g)].map((match) => match[0]);
+    expect(triggers).toHaveLength(3);
+    for (const trigger of triggers) {
+      expect(trigger.match(/SELECT RAISE\(/g)).toHaveLength(1);
+      expect(trigger.slice(0, trigger.lastIndexOf('END;')).match(/;/g)).toHaveLength(1);
+    }
   });
   it('preserves dispatched and ambiguous lifecycle states', () =>
     expect(sql).toContain("'RESERVED','DISPATCHED','RECONCILED','AMBIGUOUS','CANCELLED'"));
