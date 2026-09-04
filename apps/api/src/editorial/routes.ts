@@ -8,6 +8,11 @@ import { hasPermission, newId, type Permission } from '@vision-maxson/domain';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import type { Bindings } from '../app';
 import { ProviderError } from '@vision-maxson/providers';
+import {
+  phase3ShortDeReviewEsProfile,
+  phase3ShortEnReviewEsProfile,
+  type BoundedExecutionProfile,
+} from '@vision-maxson/providers/execution-profile';
 import { EditorialExecutionService } from './execution';
 import { authorizePhase3Envelope } from './budget';
 import { EditorialRepository, type EditorialActor } from './repository';
@@ -161,51 +166,57 @@ editorialRoutes.post(
     }
   },
 );
-editorialRoutes.post(
-  '/admin/projects/:projectId/editorial-execution-envelopes/phase3_short_en_review_es_v1',
-  requirePermission('providers:admin'),
-  async (c) => {
-    const body: unknown = await c.req.json().catch(() => ({}));
-    if (typeof body !== 'object' || body === null || Object.keys(body).length !== 0)
-      return problem(
-        c,
-        422,
-        'Validation Failed',
-        'This authorization endpoint accepts no budget overrides.',
-      );
-    try {
-      const result = await authorizePhase3Envelope(
-        c.env.DB,
-        c.get('user'),
-        c.req.param('projectId'),
-      );
-      if (!result.idempotent)
-        await audit(
+const envelopeProfiles: readonly BoundedExecutionProfile[] = [
+  phase3ShortEnReviewEsProfile,
+  phase3ShortDeReviewEsProfile,
+];
+for (const profile of envelopeProfiles)
+  editorialRoutes.post(
+    `/admin/projects/:projectId/editorial-execution-envelopes/${profile.key}`,
+    requirePermission('providers:admin'),
+    async (c) => {
+      const body: unknown = await c.req.json().catch(() => ({}));
+      if (typeof body !== 'object' || body === null || Object.keys(body).length !== 0)
+        return problem(
           c,
-          'editorial.execution_envelope_authorized',
-          'editorial_execution_envelope',
-          String(result.envelope.id),
-          {
-            profileKey: 'phase3_short_en_review_es_v1',
-            projectId: c.req.param('projectId'),
-            providerKey: 'openai',
-            modelKey: 'gpt-5.6-luna',
-            maximumCalls: 2,
-            monetaryCeilingMicrousd: 7000,
-            currency: 'USD',
-          },
+          422,
+          'Validation Failed',
+          'This authorization endpoint accepts no budget overrides.',
         );
-      return c.json(result, result.idempotent ? 200 : 201);
-    } catch (error) {
-      return problem(
-        c,
-        422,
-        'Validation Failed',
-        error instanceof Error ? error.message : 'execution_envelope_authorization_failed',
-      );
-    }
-  },
-);
+      try {
+        const result = await authorizePhase3Envelope(
+          c.env.DB,
+          c.get('user'),
+          c.req.param('projectId'),
+          profile,
+        );
+        if (!result.idempotent)
+          await audit(
+            c,
+            'editorial.execution_envelope_authorized',
+            'editorial_execution_envelope',
+            String(result.envelope.id),
+            {
+              profileKey: profile.key,
+              projectId: c.req.param('projectId'),
+              providerKey: profile.providerKey,
+              modelKey: profile.modelKey,
+              maximumCalls: profile.maximumDispatches,
+              monetaryCeilingMicrousd: profile.monetaryCeilingMicrousd,
+              currency: 'USD',
+            },
+          );
+        return c.json(result, result.idempotent ? 200 : 201);
+      } catch (error) {
+        return problem(
+          c,
+          422,
+          'Validation Failed',
+          error instanceof Error ? error.message : 'execution_envelope_authorization_failed',
+        );
+      }
+    },
+  );
 
 type IntelligenceTask = z.infer<typeof intelligenceTaskSchema>;
 const taskRoutes: ReadonlyArray<readonly [string, IntelligenceTask]> = [

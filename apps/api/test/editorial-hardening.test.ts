@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '../../..');
 const execution = readFileSync(resolve(root, 'apps/api/src/editorial/execution.ts'), 'utf8');
+const budget = readFileSync(resolve(root, 'apps/api/src/editorial/budget.ts'), 'utf8');
 const routes = readFileSync(resolve(root, 'apps/api/src/editorial/routes.ts'), 'utf8');
 const migration = readFileSync(
   resolve(root, 'packages/db/migrations/0003_editorial_execution_budgets.sql'),
@@ -27,8 +28,34 @@ describe('editorial routing and budget hardening', () => {
     expect(execution).toContain('a.current_version_id=v.id');
     expect(execution).toContain("a.artifact_type='PRODUCTION_SCRIPT'");
     expect(execution).toContain("a.status='approved'");
-    expect(execution).toContain("v.language_code='en'");
+    expect(execution).toContain('v.language_code=?');
+    expect(execution).toContain('projectProfile.productionLanguage');
     expect(execution).toContain('a.project_id=?');
+  });
+  it('keeps German authorization explicit and server controlled', () => {
+    expect(routes).toContain('phase3ShortDeReviewEsProfile');
+    expect(routes).toContain(
+      '`/admin/projects/:projectId/editorial-execution-envelopes/${profile.key}`',
+    );
+    expect(routes).toContain('profileKey: profile.key');
+    expect(routes).toContain('maximumCalls: profile.maximumDispatches');
+  });
+  it('requires the current approved de to es brief before German authorization', () => {
+    expect(budget).toContain('PHASE3_SHORT_DE_REVIEW_ES_PROFILE');
+    expect(budget).toContain("a.artifact_type='CONTENT_BRIEF'");
+    expect(budget).toContain("a.status='approved'");
+    expect(budget).toContain('content.productionLanguage !== profile.productionLanguage');
+    expect(budget).toContain('content.reviewLanguage !== profile.reviewLanguage');
+  });
+  it('isolates envelope lookup by profile key and version', () => {
+    expect(budget).toContain('e.profile_key=? AND e.profile_version=?');
+    expect(budget).toContain('profile.key');
+    expect(budget).toContain('profile.version');
+  });
+  it('carries the selected profile languages into provider context', () => {
+    expect(execution).toContain('key: boundedProfile.key');
+    expect(execution).toContain('productionLanguage: boundedProfile.productionLanguage');
+    expect(execution).toContain('reviewLanguage: boundedProfile.reviewLanguage');
   });
   it('keeps review output tied to the exact source without mutating it', () => {
     expect(execution).toContain('sourceScriptVersionId !== inputVersionId');

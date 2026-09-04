@@ -20,9 +20,11 @@ import {
 import { OpenAIResponsesAdapter } from '@vision-maxson/providers/openai';
 import { taskPolicy } from '@vision-maxson/providers/policy';
 import {
+  boundedProfileForProject,
   conservativeInputTokenUpperBound,
   isBoundedProfileStep,
-  phase3ShortEnReviewEsProfile,
+  isProjectEligibleForBoundedProfile,
+  type BoundedExecutionProfile,
 } from '@vision-maxson/providers/execution-profile';
 import { calculateReservation, loadBoundedEnvelope, reservationStatement } from './budget';
 import { z } from 'zod';
@@ -190,8 +192,18 @@ export class EditorialExecutionService {
         costRank: Number(cfg.costRank),
       } satisfies ModelCandidate;
     });
+    const boundedProfile = isBoundedProfileStep(task)
+      ? boundedProfileForProject({
+          format: project.format,
+          operatingMode: project.operatingMode,
+          primaryLanguage: project.primaryLanguage,
+          reviewLanguage: project.reviewLocale,
+        })
+      : undefined;
     const economyEligible =
-      isBoundedProfileStep(task) && this.isProfileProjectEligible(project, task);
+      boundedProfile !== undefined &&
+      isBoundedProfileStep(task) &&
+      this.isProfileProjectEligible(project, task, boundedProfile);
     const policy = taskPolicy(task, { economyEligible });
     const selected = routeModel(candidates, {
       mode: command.mode,
@@ -206,19 +218,25 @@ export class EditorialExecutionService {
       (row) => row.providerKey === selected.providerKey && row.modelKey === selected.modelKey,
     )!;
     const boundedStep =
-      isBoundedProfileStep(task) && selected.modelKey === phase3ShortEnReviewEsProfile.modelKey;
+      economyEligible &&
+      boundedProfile !== undefined &&
+      isBoundedProfileStep(task) &&
+      selected.providerKey === boundedProfile.providerKey &&
+      selected.modelKey === boundedProfile.modelKey;
     if (boundedStep && command.creativeRegeneration)
       throw new ProviderError(
         'PERMANENT',
         false,
         'Creative regeneration is not allowed by the execution profile.',
       );
-    const stepPolicy = boundedStep ? phase3ShortEnReviewEsProfile.steps[task] : policy;
+    const stepPolicy = boundedStep ? boundedProfile.steps[task] : policy;
     const providerInput = boundedStep
       ? {
           ...project,
           executionProfile: {
-            key: phase3ShortEnReviewEsProfile.key,
+            key: boundedProfile.key,
+            productionLanguage: boundedProfile.productionLanguage,
+            reviewLanguage: boundedProfile.reviewLanguage,
             externalResearchAllowed: false,
             specializedVerificationAllowed: false,
             humanReviewRequired: true,
@@ -234,7 +252,7 @@ export class EditorialExecutionService {
         instructions: providerInstructions,
         input: providerInput,
         outputSchema: providerOutputSchema,
-      }) > phase3ShortEnReviewEsProfile.steps[task].inputTokenCeiling
+      }) > boundedProfile.steps[task].inputTokenCeiling
     )
       throw new ProviderError(
         'PERMANENT',
@@ -242,9 +260,11 @@ export class EditorialExecutionService {
         'Provider-bound input exceeds the execution profile ceiling.',
       );
     const envelope = boundedStep
-      ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected)
+      ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected, boundedProfile)
       : null;
-    const reservedMicrousd = boundedStep ? calculateReservation(selectedRow, task) : null;
+    const reservedMicrousd = boundedStep
+      ? calculateReservation(selectedRow, task, boundedProfile)
+      : null;
     const runId = newId('intelligence_run'),
       at = now();
     const regeneration = command.creativeRegeneration ? 1 : 0;
@@ -554,6 +574,12 @@ export class EditorialExecutionService {
       .bind(projectId, this.actor.workspaceId)
       .first<Row>();
     if (!project) throw new ProviderError('PERMANENT', false, 'Project not found.');
+    const projectProfile = boundedProfileForProject({
+      format: project.format,
+      operatingMode: project.operatingMode,
+      primaryLanguage: project.primaryLanguage,
+      reviewLanguage: 'es',
+    });
     const artifacts = await this.db
       .prepare(
         `SELECT a.artifact_type AS artifactType,v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson FROM editorial_artifacts a JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.project_id=? AND a.workspace_id=? AND a.deleted_at IS NULL AND a.status='approved' ORDER BY a.artifact_type`,
@@ -564,11 +590,23 @@ export class EditorialExecutionService {
     if (task === 'REVIEW_TRANSLATION_ES') {
       if (!inputVersionId)
         throw new ProviderError('PERMANENT', false, 'An exact source script version is required.');
+      if (!projectProfile)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The project is outside the approved bounded language profiles.',
+        );
       exactSource = await this.db
         .prepare(
-          `SELECT v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson,a.artifact_type AS artifactType FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id WHERE v.id=? AND v.workspace_id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='PRODUCTION_SCRIPT' AND v.language_code='en' AND a.status='approved' AND a.deleted_at IS NULL`,
+          `SELECT v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson,a.artifact_type AS artifactType FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id WHERE v.id=? AND v.workspace_id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='PRODUCTION_SCRIPT' AND v.language_code=? AND a.status='approved' AND a.deleted_at IS NULL`,
         )
-        .bind(inputVersionId, this.actor.workspaceId, this.actor.workspaceId, projectId)
+        .bind(
+          inputVersionId,
+          this.actor.workspaceId,
+          this.actor.workspaceId,
+          projectId,
+          projectProfile.productionLanguage,
+        )
         .first<Row>();
       if (!exactSource)
         throw new ProviderError(
@@ -609,31 +647,37 @@ export class EditorialExecutionService {
       .bind(this.actor.workspaceId, idempotencyKey)
       .first<Row>();
   }
-  private isProfileProjectEligible(project: Row, task: Task) {
-    if (
-      project.format !== 'SHORT' ||
-      project.operatingMode !== 'ASSISTED' ||
-      project.primaryLanguage !== 'en' ||
-      project.reviewLocale !== 'es'
-    )
-      return false;
-    if (task === 'SCRIPT_WRITER_SHORT') {
-      const brief = (project.approvedArtifacts as Row[]).find(
-        (item) => item.artifactType === 'CONTENT_BRIEF',
-      );
-      if (!brief || typeof brief.contentJson !== 'string') return false;
+  private isProfileProjectEligible(project: Row, task: Task, profile: BoundedExecutionProfile) {
+    if (!isBoundedProfileStep(task)) return false;
+    const brief = (project.approvedArtifacts as Row[]).find(
+      (item) => item.artifactType === 'CONTENT_BRIEF',
+    );
+    let briefProductionLanguage: unknown;
+    let briefReviewLanguage: unknown;
+    if (brief && typeof brief.contentJson === 'string')
       try {
         const content = JSON.parse(brief.contentJson) as Row;
-        return (
-          content.format === 'SHORT' &&
-          content.productionLanguage === 'en' &&
-          content.reviewLanguage === 'es'
-        );
+        if (content.format === 'SHORT') {
+          briefProductionLanguage = content.productionLanguage;
+          briefReviewLanguage = content.reviewLanguage;
+        }
       } catch {
-        return false;
+        // Invalid persisted JSON is ineligible and fails closed below.
       }
-    }
-    return task === 'REVIEW_TRANSLATION_ES' && project.exactSource !== null;
+    return isProjectEligibleForBoundedProfile(
+      profile,
+      {
+        format: project.format,
+        operatingMode: project.operatingMode,
+        primaryLanguage: project.primaryLanguage,
+        reviewLanguage: project.reviewLocale,
+        briefProductionLanguage,
+        briefReviewLanguage,
+        hasApprovedBrief: brief !== undefined,
+        hasExactSource: project.exactSource !== null,
+      },
+      task,
+    );
   }
   private observer(runId: string) {
     return {

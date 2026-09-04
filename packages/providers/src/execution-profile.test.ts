@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  boundedProfileForProject,
   conservativeInputTokenUpperBound,
+  isProjectEligibleForBoundedProfile,
+  phase3ShortDeReviewEsProfile as germanProfile,
   phase3ShortEnReviewEsProfile as profile,
   reserveMicrousd,
 } from './execution-profile';
@@ -99,4 +102,114 @@ describe('phase 3 bounded execution profile', () => {
   });
   it('does not mutate catalog policy objects', () =>
     expect(defaultTaskPolicies.SCRIPT_WRITER_SHORT!.minimumQualityTier).toBe('BALANCED'));
+});
+describe('German bounded editorial profile', () => {
+  const eligible = {
+    format: 'SHORT',
+    operatingMode: 'ASSISTED',
+    primaryLanguage: 'de',
+    reviewLanguage: 'es',
+    briefProductionLanguage: 'de',
+    briefReviewLanguage: 'es',
+    hasApprovedBrief: true,
+    hasExactSource: true,
+  };
+
+  it('defines an explicit de to es profile with the exact approved bounds', () => {
+    expect(germanProfile.key).toBe('phase3_short_de_review_es_v1');
+    expect(germanProfile.productionLanguage).toBe('de');
+    expect(germanProfile.reviewLanguage).toBe('es');
+    expect(germanProfile.providerKey).toBe('openai');
+    expect(germanProfile.modelKey).toBe('gpt-5.6-luna');
+    expect(germanProfile).toMatchObject({
+      projectFormat: 'SHORT',
+      operatingMode: 'ASSISTED',
+      maximumDispatches: 2,
+      totalMaximumOutputTokens: 1792,
+      monetaryCeilingMicrousd: 7000,
+      creativeRegenerationAllowed: false,
+      fallbackAllowed: false,
+      externalResearchAllowed: false,
+      humanReviewRequired: true,
+    });
+  });
+
+  it('shares immutable step bounds with English without expanding its language', () => {
+    expect(germanProfile.steps).toBe(profile.steps);
+    expect(germanProfile.productionLanguage).toBe('de');
+    expect(profile.productionLanguage).toBe('en');
+    expect(germanProfile.steps.SCRIPT_WRITER_SHORT).toMatchObject({
+      maximumAttempts: 1,
+      timeoutMs: 45_000,
+      inputTokenCeiling: 8192,
+      maxOutputTokens: 768,
+      reasoningEffort: 'none',
+    });
+    expect(germanProfile.steps.REVIEW_TRANSLATION_ES.maxOutputTokens).toBe(1024);
+  });
+
+  it('selects profiles only for their exact server-owned language pair', () => {
+    expect(boundedProfileForProject(eligible)?.key).toBe(germanProfile.key);
+    expect(boundedProfileForProject({ ...eligible, primaryLanguage: 'en' })?.key).toBe(profile.key);
+    expect(boundedProfileForProject({ ...eligible, primaryLanguage: 'fr' })).toBeUndefined();
+    expect(boundedProfileForProject({ ...eligible, reviewLanguage: 'de' })).toBeUndefined();
+  });
+
+  it('requires a matching approved de to es brief for both German steps', () => {
+    expect(isProjectEligibleForBoundedProfile(germanProfile, eligible, 'SCRIPT_WRITER_SHORT')).toBe(
+      true,
+    );
+    expect(
+      isProjectEligibleForBoundedProfile(germanProfile, eligible, 'REVIEW_TRANSLATION_ES'),
+    ).toBe(true);
+    for (const mismatch of [
+      { primaryLanguage: 'en' },
+      { briefProductionLanguage: 'en' },
+      { briefReviewLanguage: 'de' },
+      { hasApprovedBrief: false },
+    ])
+      expect(
+        isProjectEligibleForBoundedProfile(
+          germanProfile,
+          { ...eligible, ...mismatch },
+          'SCRIPT_WRITER_SHORT',
+        ),
+      ).toBe(false);
+  });
+
+  it('rejects cross-profile eligibility and requires an exact source for translation', () => {
+    expect(isProjectEligibleForBoundedProfile(profile, eligible, 'SCRIPT_WRITER_SHORT')).toBe(
+      false,
+    );
+    expect(
+      isProjectEligibleForBoundedProfile(
+        germanProfile,
+        { ...eligible, primaryLanguage: 'en', briefProductionLanguage: 'en' },
+        'SCRIPT_WRITER_SHORT',
+      ),
+    ).toBe(false);
+    expect(
+      isProjectEligibleForBoundedProfile(
+        germanProfile,
+        { ...eligible, hasExactSource: false },
+        'REVIEW_TRANSLATION_ES',
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps Luna economy eligibility contextual and the catalog policy unchanged', () => {
+    expect(taskPolicy('SCRIPT_WRITER_SHORT').minimumQualityTier).toBe('BALANCED');
+    expect(taskPolicy('SCRIPT_WRITER_SHORT', { economyEligible: true }).minimumQualityTier).toBe(
+      'ECONOMY',
+    );
+    expect(() =>
+      routeModel([luna], {
+        mode: 'LOCKED',
+        preferredProviderKey: 'openai',
+        preferredModelKey: luna.modelKey,
+        requiredCapabilities: ['STRUCTURED_OUTPUT'],
+        minimumQualityTier: taskPolicy('SCRIPT_WRITER_SHORT').minimumQualityTier,
+      }),
+    ).toThrow();
+  });
 });

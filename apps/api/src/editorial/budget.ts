@@ -1,8 +1,8 @@
 import { ProviderError } from '@vision-maxson/providers';
 import {
-  PHASE3_SHORT_EN_REVIEW_ES_PROFILE,
-  phase3ShortEnReviewEsProfile,
+  PHASE3_SHORT_DE_REVIEW_ES_PROFILE,
   reserveMicrousd,
+  type BoundedExecutionProfile,
   type BoundedProfileStep,
 } from '@vision-maxson/providers/execution-profile';
 import type { EditorialActor } from './repository';
@@ -15,6 +15,7 @@ export async function authorizePhase3Envelope(
   db: D1Database,
   actor: EditorialActor,
   projectId: string,
+  profile: BoundedExecutionProfile,
 ) {
   const project = await db
     .prepare(
@@ -24,28 +25,44 @@ export async function authorizePhase3Envelope(
     .first<Row>();
   if (!project) throw new Error('project_not_found');
   if (
-    project.format !== 'SHORT' ||
-    project.operatingMode !== 'ASSISTED' ||
-    project.primaryLanguage !== 'en'
+    project.format !== profile.projectFormat ||
+    project.operatingMode !== profile.operatingMode ||
+    project.primaryLanguage !== profile.productionLanguage
   )
     throw new Error('project_not_eligible_for_execution_profile');
+  if (profile.key === PHASE3_SHORT_DE_REVIEW_ES_PROFILE) {
+    const brief = await db
+      .prepare(
+        `SELECT v.content_json AS contentJson FROM editorial_artifacts a JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.workspace_id=? AND a.project_id=? AND a.artifact_type='CONTENT_BRIEF' AND a.status='approved' AND a.deleted_at IS NULL`,
+      )
+      .bind(actor.workspaceId, projectId)
+      .first<Row>();
+    let content: Row | null = null;
+    if (typeof brief?.contentJson === 'string')
+      try {
+        content = JSON.parse(brief.contentJson) as Row;
+      } catch {
+        content = null;
+      }
+    if (
+      content?.format !== profile.projectFormat ||
+      content.productionLanguage !== profile.productionLanguage ||
+      content.reviewLanguage !== profile.reviewLanguage
+    )
+      throw new Error('project_not_eligible_for_execution_profile');
+  }
   const model = await db
     .prepare(
       `SELECT p.id AS providerId,m.id AS modelId FROM ai_providers p JOIN ai_provider_models m ON m.provider_id=p.id WHERE p.key=? AND m.model_key=? AND p.status='configured' AND m.status='available'`,
     )
-    .bind(phase3ShortEnReviewEsProfile.providerKey, phase3ShortEnReviewEsProfile.modelKey)
+    .bind(profile.providerKey, profile.modelKey)
     .first<Row>();
   if (!model) throw new Error('approved_provider_model_unavailable');
   const existing = await db
     .prepare(
       `SELECT id,status FROM editorial_execution_envelopes WHERE workspace_id=? AND project_id=? AND profile_key=? AND profile_version=? AND status='ACTIVE'`,
     )
-    .bind(
-      actor.workspaceId,
-      projectId,
-      PHASE3_SHORT_EN_REVIEW_ES_PROFILE,
-      phase3ShortEnReviewEsProfile.version,
-    )
+    .bind(actor.workspaceId, projectId, profile.key, profile.version)
     .first<Row>();
   if (existing) return { envelope: existing, idempotent: true };
   const id = newId('execution_envelope'),
@@ -58,12 +75,12 @@ export async function authorizePhase3Envelope(
       id,
       actor.workspaceId,
       projectId,
-      PHASE3_SHORT_EN_REVIEW_ES_PROFILE,
-      phase3ShortEnReviewEsProfile.version,
+      profile.key,
+      profile.version,
       model.providerId,
       model.modelId,
-      phase3ShortEnReviewEsProfile.monetaryCeilingMicrousd,
-      phase3ShortEnReviewEsProfile.maximumDispatches,
+      profile.monetaryCeilingMicrousd,
+      profile.maximumDispatches,
       actor.id,
       at,
       at,
@@ -77,11 +94,9 @@ export async function loadBoundedEnvelope(
   actor: EditorialActor,
   projectId: string,
   selected: { providerKey: string; modelKey: string },
+  profile: BoundedExecutionProfile,
 ) {
-  if (
-    selected.providerKey !== phase3ShortEnReviewEsProfile.providerKey ||
-    selected.modelKey !== phase3ShortEnReviewEsProfile.modelKey
-  )
+  if (selected.providerKey !== profile.providerKey || selected.modelKey !== profile.modelKey)
     throw new ProviderError(
       'UNAVAILABLE',
       false,
@@ -94,8 +109,8 @@ export async function loadBoundedEnvelope(
     .bind(
       actor.workspaceId,
       projectId,
-      PHASE3_SHORT_EN_REVIEW_ES_PROFILE,
-      phase3ShortEnReviewEsProfile.version,
+      profile.key,
+      profile.version,
       selected.providerKey,
       selected.modelKey,
     )
@@ -105,8 +120,12 @@ export async function loadBoundedEnvelope(
   return envelope;
 }
 
-export function calculateReservation(row: Row, step: BoundedProfileStep) {
-  const stepPolicy = phase3ShortEnReviewEsProfile.steps[step];
+export function calculateReservation(
+  row: Row,
+  step: BoundedProfileStep,
+  profile: BoundedExecutionProfile,
+) {
+  const stepPolicy = profile.steps[step];
   try {
     return reserveMicrousd(
       {
