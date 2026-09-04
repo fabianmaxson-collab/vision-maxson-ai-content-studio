@@ -8,10 +8,9 @@
   },
   "scripts": {
     "build": "pnpm --filter @vision-maxson/web build && pnpm --filter @vision-maxson/api build",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "check": "pnpm deployment:safety-check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "deploy:preview": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env preview",
     "deploy:production": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env production",
-    "deploy:staging": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env staging",
     "dev": "pnpm build:web && wrangler dev --config infra/cloudflare/wrangler.jsonc --env local",
     "build:web": "pnpm --filter @vision-maxson/web build",
     "format": "prettier --write .",
@@ -22,7 +21,10 @@
     "db:migrate:local": "wrangler d1 migrations apply vision-maxson-data-staging --local --config infra/cloudflare/wrangler.jsonc --env local",
     "db:migrate:staging": "wrangler d1 migrations apply vision-maxson-data-staging --remote --config infra/cloudflare/wrangler.jsonc --env staging",
     "db:migrations:list:staging": "wrangler d1 migrations list vision-maxson-data-staging --remote --config infra/cloudflare/wrangler.jsonc --env staging",
-    "dry-run:staging": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env staging --dry-run --outdir apps/api/dist-staging"
+    "dry-run:staging": "pnpm build:web && wrangler deploy --config infra/cloudflare/wrangler.jsonc --env staging --dry-run --outdir apps/api/dist-staging",
+    "staging:candidate": "node scripts/create-staging-candidate.mjs",
+    "staging:promote": "node scripts/promote-staging-version.mjs",
+    "deployment:safety-check": "node scripts/check-deployment-safety.mjs"
   },
   "devDependencies": {
     "@eslint/js": "latest",
