@@ -64,7 +64,7 @@ export class EditorialRepository {
       existing.version !== input.expectedArtifactVersion
     )
       throw new Error('version_conflict');
-    if (existing?.currentVersionId !== (input.parentVersionId ?? null))
+    if (existing && existing.currentVersionId !== (input.parentVersionId ?? null))
       throw new Error('parent_version_not_current');
     const versionNumber = existing
       ? ((
