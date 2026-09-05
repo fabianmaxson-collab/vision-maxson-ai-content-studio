@@ -68,6 +68,14 @@ describe('editorial routing and budget hardening', () => {
     expect(execution.indexOf('reservationStatement(this.db')).toBeLessThan(
       execution.indexOf('new OpenAIResponsesAdapter'),
     ));
+  it('validates exact bounded provider material before dispatch without duplicating context', () => {
+    expect(execution).toContain('const providerRequestInput = boundedStep ? {} : providerInput');
+    expect(execution).toContain('input: providerRequestInput');
+    expect(execution).toContain('renderPrompt(prompt.templateText, providerInput)');
+    expect(execution.indexOf('Provider-bound input exceeds')).toBeLessThan(
+      execution.indexOf('new OpenAIResponsesAdapter'),
+    );
+  });
   it('marks dispatch and preserves ambiguous reservations', () => {
     expect(execution).toContain("status='DISPATCHED'");
     expect(execution).toContain("status='AMBIGUOUS'");

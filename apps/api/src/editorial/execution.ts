@@ -246,11 +246,14 @@ export class EditorialExecutionService {
       : project;
     const providerInstructions = renderPrompt(prompt.templateText, providerInput);
     const providerOutputSchema = z.toJSONSchema(outputSchema[task]);
+    // Bounded prompts already render the complete context into instructions. Sending it again as
+    // input duplicates provider-bound content and consumes budget without adding information.
+    const providerRequestInput = boundedStep ? {} : providerInput;
     if (
       boundedStep &&
       conservativeInputTokenUpperBound({
         instructions: providerInstructions,
-        input: providerInput,
+        input: providerRequestInput,
         outputSchema: providerOutputSchema,
       }) > boundedProfile.steps[task].inputTokenCeiling
     )
@@ -354,7 +357,7 @@ export class EditorialExecutionService {
           taskType: task,
           modelKey: selected.modelKey,
           promptVersionId: prompt.id,
-          input: providerInput,
+          input: providerRequestInput,
           instructions: providerInstructions,
           outputSchema: providerOutputSchema,
           outputSchemaName: prompt.key,

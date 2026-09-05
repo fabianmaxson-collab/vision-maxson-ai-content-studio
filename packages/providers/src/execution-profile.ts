@@ -128,9 +128,22 @@ export function isBoundedProfileStep(task: string): task is BoundedProfileStep {
   return task === 'SCRIPT_WRITER_SHORT' || task === 'REVIEW_TRANSLATION_ES';
 }
 
-/** Conservative upper bound: UTF-8 bytes plus framing allowance. */
-export function conservativeInputTokenUpperBound(value: unknown, providerOverheadTokens = 1024) {
-  return new TextEncoder().encode(JSON.stringify(value)).byteLength + providerOverheadTokens;
+const utf8Bytes = (value: string) => new TextEncoder().encode(value).byteLength;
+
+/**
+ * Conservative upper bound over the exact independently serialized fields sent to the provider.
+ * A UTF-8 byte is counted as at most one token, and framing remains an explicit fixed allowance.
+ */
+export function conservativeInputTokenUpperBound(
+  value: { instructions: string; input: unknown; outputSchema: unknown },
+  providerOverheadTokens = 1024,
+) {
+  return (
+    utf8Bytes(value.instructions) +
+    utf8Bytes(JSON.stringify(value.input)) +
+    utf8Bytes(JSON.stringify(value.outputSchema)) +
+    providerOverheadTokens
+  );
 }
 
 export interface VerifiedTokenPricing {

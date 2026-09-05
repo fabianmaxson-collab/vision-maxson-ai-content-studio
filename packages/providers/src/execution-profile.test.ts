@@ -98,7 +98,65 @@ describe('phase 3 bounded execution profile', () => {
     expect(() =>
       reserveMicrousd({ ...pricing, effectiveFrom: '2027-01-01' }, 1, 1, new Date('2026-09-04')),
     ).toThrow();
-    expect(conservativeInputTokenUpperBound({ x: 'abc' })).toBeGreaterThan(1024);
+    expect(
+      conservativeInputTokenUpperBound({
+        instructions: 'abc',
+        input: {},
+        outputSchema: { type: 'object' },
+      }),
+    ).toBeGreaterThan(1024);
+  });
+  it('counts exact provider fields once, including schema, instructions, and framing', () => {
+    const baseline = conservativeInputTokenUpperBound({
+      instructions: '',
+      input: {},
+      outputSchema: {},
+    });
+    expect(baseline).toBe(1028);
+    expect(
+      conservativeInputTokenUpperBound({
+        instructions: 'instruction',
+        input: {},
+        outputSchema: {},
+      }),
+    ).toBe(baseline + 11);
+    expect(
+      conservativeInputTokenUpperBound({
+        instructions: '',
+        input: {},
+        outputSchema: { required: ['title'] },
+      }),
+    ).toBeGreaterThan(baseline);
+  });
+  it('handles German UTF-8 conservatively without treating characters as bytes', () => {
+    const ascii = conservativeInputTokenUpperBound({
+      instructions: 'Pragnant',
+      input: {},
+      outputSchema: {},
+    });
+    const german = conservativeInputTokenUpperBound({
+      instructions: 'Prägnant',
+      input: {},
+      outputSchema: {},
+    });
+    expect(german).toBe(ascii + 1);
+  });
+  it('fits the measured Tim der Chronist request after removing duplicated context', () => {
+    const measured = conservativeInputTokenUpperBound({
+      instructions: 'x'.repeat(4091),
+      input: {},
+      outputSchema: 'x'.repeat(618),
+    });
+    expect(measured).toBe(5737);
+    expect(measured).toBeLessThanOrEqual(germanProfile.steps.SCRIPT_WRITER_SHORT.inputTokenCeiling);
+  });
+  it('still fails closed for oversized provider-bound material', () => {
+    const measured = conservativeInputTokenUpperBound({
+      instructions: 'x'.repeat(8192),
+      input: {},
+      outputSchema: {},
+    });
+    expect(measured).toBeGreaterThan(germanProfile.steps.SCRIPT_WRITER_SHORT.inputTokenCeiling);
   });
   it('does not mutate catalog policy objects', () =>
     expect(defaultTaskPolicies.SCRIPT_WRITER_SHORT!.minimumQualityTier).toBe('BALANCED'));
