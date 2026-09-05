@@ -91,6 +91,28 @@ function renderPrompt(template: string, context: Row) {
     throw new ProviderError('PERMANENT', false, 'Prompt contains an unsupported variable.');
   return template.replaceAll('{{context_json}}', JSON.stringify(context));
 }
+export function reviewTranslationProviderContext(project: Row, profile: BoundedExecutionProfile) {
+  const source = project.exactSource as Row | null;
+  if (
+    !source ||
+    typeof source.versionId !== 'string' ||
+    typeof source.contentText !== 'string' ||
+    source.languageCode !== profile.productionLanguage
+  )
+    throw new ProviderError(
+      'PERMANENT',
+      false,
+      'The exact production-language source text is required for review translation.',
+    );
+  return {
+    task: 'REVIEW_TRANSLATION_ES' as const,
+    sourceScriptVersionId: source.versionId,
+    sourceLanguage: profile.productionLanguage,
+    targetLanguage: profile.reviewLanguage,
+    sourceScript: source.contentText,
+  };
+}
+
 function validateSemantics(
   task: Task,
   output: unknown,
@@ -231,18 +253,20 @@ export class EditorialExecutionService {
       );
     const stepPolicy = boundedStep ? boundedProfile.steps[task] : policy;
     const providerInput = boundedStep
-      ? {
-          ...project,
-          executionProfile: {
-            key: boundedProfile.key,
-            productionLanguage: boundedProfile.productionLanguage,
-            reviewLanguage: boundedProfile.reviewLanguage,
-            externalResearchAllowed: false,
-            specializedVerificationAllowed: false,
-            humanReviewRequired: true,
-            reviewTranslationIsReviewOnly: true,
-          },
-        }
+      ? task === 'REVIEW_TRANSLATION_ES'
+        ? reviewTranslationProviderContext(project, boundedProfile)
+        : {
+            ...project,
+            executionProfile: {
+              key: boundedProfile.key,
+              productionLanguage: boundedProfile.productionLanguage,
+              reviewLanguage: boundedProfile.reviewLanguage,
+              externalResearchAllowed: false,
+              specializedVerificationAllowed: false,
+              humanReviewRequired: true,
+              reviewTranslationIsReviewOnly: true,
+            },
+          }
       : project;
     const providerInstructions = renderPrompt(prompt.templateText, providerInput);
     const providerOutputSchema = z.toJSONSchema(outputSchema[task]);

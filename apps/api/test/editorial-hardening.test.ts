@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { intelligenceCommandSchema } from '@vision-maxson/contracts';
+import { conservativeInputTokenUpperBound } from '@vision-maxson/providers/execution-profile';
+import { reviewTranslationProviderContext } from '../src/editorial/execution';
+import { phase3ShortDeReviewEsProfile } from '@vision-maxson/providers/execution-profile';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -75,6 +78,59 @@ describe('editorial routing and budget hardening', () => {
     expect(execution.indexOf('Provider-bound input exceeds')).toBeLessThan(
       execution.indexOf('new OpenAIResponsesAdapter'),
     );
+  });
+  it('builds a dedicated review-only provider context with the complete exact source', () => {
+    const sourceScript = 'Vollständiger autoritativer deutscher Text.';
+    const context = reviewTranslationProviderContext(
+      {
+        id: 'project-1',
+        brandName: 'must-not-be-provider-bound',
+        channelName: 'must-not-be-provider-bound',
+        editorialStrategyJson: 'must-not-be-provider-bound',
+        approvedArtifacts: [{ artifactType: 'CONTENT_BRIEF', versionId: 'brief-version-1' }],
+        exactSource: {
+          artifactType: 'PRODUCTION_SCRIPT',
+          versionId: 'script-version-1',
+          languageCode: 'de',
+          contentText: sourceScript,
+        },
+      },
+      phase3ShortDeReviewEsProfile,
+    );
+
+    expect(context).toEqual({
+      task: 'REVIEW_TRANSLATION_ES',
+      sourceScriptVersionId: 'script-version-1',
+      sourceLanguage: 'de',
+      targetLanguage: 'es',
+      sourceScript,
+    });
+    const serialized = JSON.stringify(context);
+    expect(serialized.match(/Vollständiger autoritativer deutscher Text\./gu)).toHaveLength(1);
+    expect(serialized).not.toContain('CONTENT_BRIEF');
+    expect(serialized).not.toContain('must-not-be-provider-bound');
+  });
+  it('fails closed when the exact source text or production language is invalid', () => {
+    expect(() =>
+      reviewTranslationProviderContext(
+        { exactSource: { versionId: 'script-version-1', languageCode: 'en', contentText: 'text' } },
+        phase3ShortDeReviewEsProfile,
+      ),
+    ).toThrow('exact production-language source text');
+    expect(() =>
+      reviewTranslationProviderContext(
+        { exactSource: { versionId: 'script-version-1', languageCode: 'de', contentText: null } },
+        phase3ShortDeReviewEsProfile,
+      ),
+    ).toThrow('exact production-language source text');
+  });
+  it('still fails closed when a genuinely distinct source is oversized', () => {
+    const estimate = conservativeInputTokenUpperBound({
+      instructions: 'x'.repeat(8192),
+      input: {},
+      outputSchema: {},
+    });
+    expect(estimate).toBeGreaterThan(8192);
   });
   it('marks dispatch and preserves ambiguous reservations', () => {
     expect(execution).toContain("status='DISPATCHED'");
