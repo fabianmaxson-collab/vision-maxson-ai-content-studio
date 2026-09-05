@@ -55,19 +55,3 @@ export function countWords(text: string): number {
 export function canApproveEditorial(role: 'owner' | 'admin' | 'operator' | 'viewer'): boolean {
   return role !== 'viewer';
 }
-
-export function deriveGenerationReadiness(input: {
-  projectStatus: string;
-  preflightResult: AssessmentResult;
-  preflightApproved: boolean;
-  requiredVersionsCurrent: boolean;
-  requiredApprovalsCurrent: boolean;
-}): 'NOT_READY' | 'READY_FOR_GENERATION' {
-  return input.projectStatus === 'PREFLIGHT_REVIEW' &&
-    input.preflightResult === 'PASS' &&
-    input.preflightApproved &&
-    input.requiredVersionsCurrent &&
-    input.requiredApprovalsCurrent
-    ? 'READY_FOR_GENERATION'
-    : 'NOT_READY';
-}

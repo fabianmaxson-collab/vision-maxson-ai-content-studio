@@ -2,6 +2,7 @@ export * from './lifecycle';
 export * from './monetization';
 export * from './parameters';
 export * from './editorial';
+export * from './terminal-pipeline';
 export * from './intelligence';
 export * from './timing';
 

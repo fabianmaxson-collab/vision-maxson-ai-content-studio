@@ -197,3 +197,87 @@ export const intelligenceCommandSchema = z
     if (value.mode === 'LOCKED' && (!value.preferredProviderKey || !value.preferredModelKey))
       context.addIssue({ code: 'custom', message: 'LOCKED requires provider and model' });
   });
+export const terminalDependencyTypeSchema = z.enum([
+  'GENERATED_FROM',
+  'USES_RESEARCH',
+  'EVALUATES_SOURCE',
+  'INFORMED_BY',
+  'VALIDATED_BY',
+]);
+export const terminalDependencyValiditySchema = z.enum([
+  'CURRENT',
+  'STALE',
+  'INVALIDATED',
+  'REGENERATION_REQUIRED',
+  'REAPPROVAL_REQUIRED',
+]);
+export const terminalApprovalStatusSchema = z.enum(['APPROVED', 'REJECTED']).nullable();
+export const terminalArtifactVersionSnapshotSchema = z
+  .object({
+    artifactType: artifactTypeSchema,
+    artifactId: id,
+    versionId: id,
+    currentVersionId: id,
+    workspaceId: id,
+    projectId: id,
+    projectFormat: z.enum(['SHORT', 'LONG_FORM']),
+    productionLanguage: languageCodeSchema,
+    reviewLanguage: languageCodeSchema,
+    languageCode: languageCodeSchema,
+    approval: terminalApprovalStatusSchema,
+    selected: z.boolean(),
+    invalidated: z.boolean(),
+    authoritativeProduction: z.boolean(),
+    reviewOnly: z.boolean(),
+    sourceScriptVersionId: id.nullable(),
+  })
+  .strict();
+export const terminalDependencySnapshotSchema = z
+  .object({
+    sourceVersionId: id,
+    dependentVersionId: id,
+    dependencyType: terminalDependencyTypeSchema,
+    validity: terminalDependencyValiditySchema,
+    invalidatedAt: z.string().datetime().nullable(),
+    invalidatedByVersionId: id.nullable(),
+  })
+  .strict();
+export const terminalPreflightCheckSnapshotSchema = z
+  .object({
+    key: z.string().min(1).max(100),
+    result: z.enum(['PASS', 'WARNING', 'BLOCKED', 'UNKNOWN']),
+    hardBlocker: z.boolean(),
+  })
+  .strict();
+export const terminalPreflightSnapshotSchema = terminalArtifactVersionSnapshotSchema
+  .extend({
+    artifactType: z.literal('PREFLIGHT'),
+    overallResult: z.enum(['PASS', 'WARNING', 'BLOCKED', 'UNKNOWN']),
+    checks: z.array(terminalPreflightCheckSnapshotSchema).min(1).max(100),
+    validatedVersionIds: z.array(id).min(1).max(20),
+  })
+  .strict();
+export const terminalGraphSnapshotSchema = z
+  .object({
+    project: z
+      .object({
+        workspaceId: id,
+        projectId: id,
+        status: z.string().min(1).max(100),
+        format: z.enum(['SHORT', 'LONG_FORM']),
+        productionLanguage: languageCodeSchema,
+        reviewLanguage: languageCodeSchema,
+      })
+      .strict(),
+    research: terminalArtifactVersionSnapshotSchema,
+    ideas: z.array(terminalArtifactVersionSnapshotSchema).min(1).max(10),
+    brief: terminalArtifactVersionSnapshotSchema,
+    script: terminalArtifactVersionSnapshotSchema,
+    translation: terminalArtifactVersionSnapshotSchema.nullable(),
+    critique: terminalArtifactVersionSnapshotSchema,
+    storyboard: terminalArtifactVersionSnapshotSchema,
+    preflight: terminalPreflightSnapshotSchema,
+    dependencies: z.array(terminalDependencySnapshotSchema).max(100),
+  })
+  .strict();
+export type TerminalGraphSnapshotContract = z.infer<typeof terminalGraphSnapshotSchema>;

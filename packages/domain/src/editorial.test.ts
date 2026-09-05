@@ -3,7 +3,6 @@ import {
   assessTiming,
   calculateKnownCost,
   canApproveEditorial,
-  deriveGenerationReadiness,
   invalidateDependents,
   mayRegenerateCreative,
   mayRetryTechnical,
@@ -33,26 +32,6 @@ describe('Phase 3 editorial domain', () => {
   });
   it('detects a stale Spanish review by exact source version', () => {
     expect(reviewIsCurrent('script-v3', 'script-v4')).toBe(false);
-  });
-  it('derives readiness without inventing a canonical status', () => {
-    expect(
-      deriveGenerationReadiness({
-        projectStatus: 'PREFLIGHT_REVIEW',
-        preflightResult: 'PASS',
-        preflightApproved: true,
-        requiredVersionsCurrent: true,
-        requiredApprovalsCurrent: true,
-      }),
-    ).toBe('READY_FOR_GENERATION');
-    expect(
-      deriveGenerationReadiness({
-        projectStatus: 'GENERATING',
-        preflightResult: 'PASS',
-        preflightApproved: true,
-        requiredVersionsCurrent: true,
-        requiredApprovalsCurrent: true,
-      }),
-    ).toBe('NOT_READY');
   });
   it('keeps operator approvals ordinary and viewer read-only', () => {
     expect(canApproveEditorial('operator')).toBe(true);
