@@ -1,6 +1,6 @@
 # Phase 3 — AI Intelligence & Editorial Planning Core
 
-Status: **PHASE 3 CORE — STAGING VALIDATED**
+Status: **PHASE 3 CORE — STAGING VALIDATED; BOUNDED GERMAN EDITORIAL E2E PASSED**
 
 Owner decision date: 2026-09-03.
 
@@ -78,3 +78,27 @@ When exact provider tokenization is unavailable, the pre-dispatch input bound is
 Cloudflare D1 error 7403 must not be worked around by changing credentials. Under separate remote authorization, first run `wrangler whoami`, verify that the selected account is the intended Vision Maxson account, and only then use a read-only remote `SELECT 1`. No remote D1 command is part of this local slice.
 
 Migration `0003_editorial_execution_budgets.sql` was adjusted before its first successful remote application: its original three-statement trigger body was split into three D1-compatible single-statement guard triggers after Wrangler remote parsing rejected the original definition. No staging schema change was committed by that failed attempt.
+
+## Bounded German editorial E2E
+
+The real STAGING E2E for project `project_985facae-7a1f-4341-8392-d4d0637d418e` passed with the server-owned profile `phase3_short_de_review_es_v1`. It validated a German production path with a Spanish review representation using OpenAI `gpt-5.6-luna`.
+
+The completed flow was:
+
+```text
+HUMAN_EDITED CONTENT_BRIEF
+→ Owner approval
+→ bounded execution-envelope authorization
+→ SCRIPT_WRITER_SHORT
+→ Owner approval of the German PRODUCTION_SCRIPT
+→ REVIEW_TRANSLATION_ES
+→ envelope CONSUMED
+```
+
+Both provider steps succeeded with exactly one technical attempt, SDK retries disabled, no fallback, no creative regeneration and no external research. The German `PRODUCTION_SCRIPT` remains the authoritative production artifact; the Spanish `REVIEW_TRANSLATION` is review-only and has a version-specific `GENERATED_FROM` dependency on that script.
+
+The bounded-input protections passed after removing duplicated provider-bound input. `REVIEW_TRANSLATION_ES` uses a minimal provider-bound context while retaining full authoritative validation on the server. Reservation-before-dispatch, integer micro-USD reconciliation, idempotency, provenance, exact-version dependencies and completion auditing all persisted correctly.
+
+The execution envelope allowed two calls with a 7,000 micro-USD ceiling. It finished `CONSUMED` after exactly two calls, with 6,247 micro-USD reserved and 1,083 micro-USD of total reconciled provider cost: 620 for `SCRIPT_WRITER_SHORT` and 463 for `REVIEW_TRANSLATION_ES`. Neither the call limit nor the monetary ceiling was exceeded.
+
+This proves the bounded German script and Spanish review slice in real STAGING. It does not declare the entire Phase 3 editorial chain complete, and Phase 4 has not started.

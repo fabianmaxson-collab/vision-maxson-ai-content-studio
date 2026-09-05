@@ -1,6 +1,6 @@
 # Phase 3 editorial intelligence core
 
-Status: implemented locally; remote migration and deployment not authorized.
+Status: implemented and validated in STAGING for the bounded German script and Spanish review slice.
 
 ## Scope and authority
 
@@ -25,6 +25,14 @@ The deterministic timing engine receives versioned Phase 2 external rules and in
 `packages/providers` defines neutral adapter, capability, request, result, usage and error contracts without an SDK or provider. Provider/model catalogs and pricing snapshots may remain empty; unknown costs are null. Prompt definitions are seeded as legitimate catalog entries, while prompt versions are immutable. Intelligence runs separate bounded technical retries from at most two creative regenerations and use idempotency keys. Safe metadata excludes full prompts, scripts, credentials and secrets.
 
 Until an Owner approves and configures a real provider, AI commands return a clear provider-not-configured problem and persist no synthetic artifacts. No Workflow, Queue, Durable Object, KV or R2 resource is part of this implementation.
+
+## Validated bounded execution
+
+The profile `phase3_short_de_review_es_v1` has passed a real STAGING E2E using OpenAI `gpt-5.6-luna`. It produced a German `PRODUCTION_SCRIPT` from an approved `HUMAN_EDITED` brief, enforced human approval of that exact current script version, and then produced a Spanish `REVIEW_TRANSLATION` without replacing or mutating the authoritative German artifact.
+
+Each step allowed one technical attempt with SDK retries disabled. Fallback, creative regeneration and external research remained disabled. Durable reservation occurred before dispatch, actual cost was reconciled afterward, idempotency prevented duplicate execution, and exact provenance, dependency and audit records were retained. The two-call envelope transitioned to `CONSUMED` with 1,083 micro-USD of total reconciled provider cost under its 7,000 micro-USD ceiling.
+
+Provider-bound input sizing serializes only the minimal context required by the selected task. An E2E-discovered duplicated-input path was removed, and `REVIEW_TRANSLATION_ES` now sends minimal provider-bound context while the server continues to validate the complete authoritative project, approval, artifact-version and dependency state before dispatch.
 
 ## Locales and supervision
 
