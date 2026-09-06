@@ -124,6 +124,25 @@ async function post(
     bindings,
   );
 }
+async function postModelTransition(app: ReturnType<typeof createApp>, bindings: Bindings) {
+  return app.request(
+    '/api/v1/admin/ai/providers/provider_openai/models/model_terra/status-transitions',
+    {
+      method: 'POST',
+      headers: {
+        Origin: bindings.APP_ORIGIN,
+        'Content-Type': 'application/json',
+        'Cf-Access-Jwt-Assertion': 'verified-by-test-double',
+      },
+      body: JSON.stringify({
+        expectedStatus: 'inactive',
+        targetStatus: 'available',
+        version: 1,
+      }),
+    },
+    bindings,
+  );
+}
 function expectSafeAudit(write: AuditWrite, outcome: 'success' | 'failure', reason: string | null) {
   expect(write.sql).toContain('INSERT INTO audit_events');
   expect(write.args).toHaveLength(16);
@@ -190,6 +209,15 @@ describe('provider connectivity admin route', () => {
     const { app, bindings, checkConnectivity } = setup('operator');
     const response = await post(app, bindings);
     expect(response.status).toBe(403);
+    expect(checkConnectivity).not.toHaveBeenCalled();
+  });
+
+  it('requires providers:admin for model availability transitions', async () => {
+    const { app, bindings, writes, checkConnectivity } = setup('operator');
+    const response = await postModelTransition(app, bindings);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, code: 'forbidden' });
+    expect(writes).toHaveLength(0);
     expect(checkConnectivity).not.toHaveBeenCalled();
   });
 

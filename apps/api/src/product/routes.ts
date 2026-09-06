@@ -8,7 +8,14 @@ import {
   createVoiceProfileSchema,
   deriveShortSchema,
 } from '@vision-maxson/contracts';
-import { hasPermission, newId, type Permission, type Role } from '@vision-maxson/domain';
+import {
+  hasPermission,
+  newId,
+  projectStatuses,
+  type Permission,
+  type ProjectStatus,
+  type Role,
+} from '@vision-maxson/domain';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import type { Bindings } from '../app';
 import { ProductRepository, type Actor } from './repository';
@@ -235,6 +242,67 @@ productRoutes.get('/projects/:id', requirePermission('projects:read'), async (c)
   const item = await new ProductRepository(c.env.DB, c.get('user')).getProject(c.req.param('id'));
   return item ? c.json(item) : problem(c, 404, 'Not Found', 'Project not found.');
 });
+productRoutes.post(
+  '/projects/:id/status-transitions',
+  requirePermission('projects:write'),
+  async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return problem(c, 422, 'Validation Failed', 'Request body must be valid JSON.');
+    }
+    if (
+      typeof body !== 'object' ||
+      body === null ||
+      Array.isArray(body) ||
+      Object.keys(body).length !== 2 ||
+      !Object.hasOwn(body, 'targetStatus') ||
+      !Object.hasOwn(body, 'version')
+    ) {
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'Request body must contain exactly targetStatus and version.',
+      );
+    }
+    const input = body as { targetStatus?: unknown; version?: unknown };
+    if (
+      typeof input.targetStatus !== 'string' ||
+      !projectStatuses.includes(input.targetStatus as ProjectStatus) ||
+      typeof input.version !== 'number' ||
+      !Number.isInteger(input.version) ||
+      input.version < 1
+    ) {
+      return problem(c, 422, 'Validation Failed', 'Invalid project transition request.');
+    }
+    try {
+      const identity = c.get('identity');
+      const result = await new ProductRepository(c.env.DB, c.get('user')).transitionProject(
+        c.req.param('id'),
+        input.targetStatus,
+        input.version,
+        {
+          requestId: c.get('requestId'),
+          environment: c.env.ENVIRONMENT,
+          accessIssuer: identity.issuer,
+          accessSubject: identity.subject,
+        },
+      );
+      return c.json(result);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'project_transition_failed';
+      if (code === 'project_not_found') {
+        return problem(c, 404, 'Not Found', 'Project not found.');
+      }
+      if (code === 'project_transition_conflict') {
+        return problem(c, 409, 'Conflict', 'Project version or status changed.');
+      }
+      return problem(c, 422, 'Validation Failed', code);
+    }
+  },
+);
 productRoutes.post('/projects/:id/derive-short', requirePermission('projects:write'), async (c) => {
   try {
     const item = await new ProductRepository(c.env.DB, c.get('user')).deriveShort(

@@ -1,9 +1,11 @@
+import { providerModelStatusTransitionSchema } from '@vision-maxson/contracts';
 import { hasPermission, newId, type Role } from '@vision-maxson/domain';
 import type { ProviderConnectivityAdapter } from '@vision-maxson/providers';
 import { OpenAIResponsesAdapter } from '@vision-maxson/providers/openai';
 import { Hono } from 'hono';
 import type { Bindings } from '../app';
 import { ProviderConnectivityService } from './connectivity';
+import { ProviderModelAdminService } from './model-admin';
 
 type User = { id: string; workspaceId: string; roles: Role[] };
 type Vars = { requestId: string; identity: { issuer: string; subject: string }; user: User };
@@ -20,6 +22,49 @@ const defaultFactory: ConnectivityAdapterFactory = (providerKey, bindings) =>
 
 export function createProviderAdminRoutes(factory: ConnectivityAdapterFactory = defaultFactory) {
   const routes = new Hono<Env>();
+  routes.post('/admin/ai/providers/:providerId/models/:modelId/status-transitions', async (c) => {
+    const user = c.get('user');
+    if (!hasPermission(user.roles, 'providers:admin')) {
+      return c.json({ ok: false, code: 'forbidden', requestId: c.get('requestId') }, 403);
+    }
+    const parsed = providerModelStatusTransitionSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json(
+        {
+          ok: false,
+          code: 'provider_model_transition_invalid',
+          requestId: c.get('requestId'),
+        },
+        422,
+      );
+    }
+    try {
+      const identity = c.get('identity');
+      const result = await new ProviderModelAdminService(c.env.DB, user, {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).transition(c.req.param('providerId'), c.req.param('modelId'), parsed.data);
+      return c.json({ ok: true, ...result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (message === 'provider_model_not_found') {
+        return c.json({ ok: false, code: message, requestId: c.get('requestId') }, 404);
+      }
+      if (message === 'provider_model_transition_conflict') {
+        return c.json({ ok: false, code: message, requestId: c.get('requestId') }, 409);
+      }
+      const code = ['provider_model_transition_invalid', 'provider_not_configured'].includes(
+        message,
+      )
+        ? message
+        : 'provider_model_transition_failed';
+      return c.json({ ok: false, code, requestId: c.get('requestId') }, 422);
+    }
+  });
   routes.post('/admin/ai/providers/:providerId/connectivity-check', async (c) => {
     const user = c.get('user');
     if (!hasPermission(user.roles, 'providers:admin'))

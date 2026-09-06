@@ -1,10 +1,23 @@
-import { evaluateEligibility, newId } from '@vision-maxson/domain';
+import {
+  canTransitionProject,
+  evaluateEligibility,
+  newId,
+  projectStatuses,
+  type ProjectStatus,
+} from '@vision-maxson/domain';
 
 export interface Actor {
   id: string;
   workspaceId: string;
   email: string;
   roles: string[];
+}
+
+export interface ProjectTransitionAuditContext {
+  requestId: string;
+  environment: string;
+  accessIssuer: string;
+  accessSubject: string;
 }
 const now = () => new Date().toISOString();
 const normalize = (value: string) => value.trim().toLocaleLowerCase('en-US');
@@ -348,6 +361,87 @@ export class ProductRepository {
       objectives: objectives.results,
     };
   }
+  async transitionProject(
+    id: string,
+    targetStatus: string,
+    expectedVersion: number,
+    auditContext: ProjectTransitionAuditContext,
+  ) {
+    if (!projectStatuses.includes(targetStatus as ProjectStatus)) {
+      throw new Error('project_status_invalid');
+    }
+
+    const project = await this.db
+      .prepare(
+        `SELECT status,version,readiness_status AS readinessStatus FROM projects WHERE id=? AND workspace_id=? AND deleted_at IS NULL`,
+      )
+      .bind(id, this.actor.workspaceId)
+      .first<{ status: ProjectStatus; version: number; readinessStatus: string }>();
+    if (!project) throw new Error('project_not_found');
+    if (project.version !== expectedVersion) throw new Error('project_transition_conflict');
+
+    const nextStatus = targetStatus as ProjectStatus;
+    if (!canTransitionProject(project.status, nextStatus)) {
+      throw new Error('project_transition_invalid');
+    }
+
+    const auditEventId = newId('audit');
+    const at = now();
+    const actorRole = this.actor.roles[0] ?? 'owner';
+    const metadata = JSON.stringify({
+      fromStatus: project.status,
+      toStatus: nextStatus,
+      fromVersion: expectedVersion,
+      toVersion: expectedVersion + 1,
+    });
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) SELECT ?,workspace_id,'user',?,?,?,?,'project.lifecycle_transitioned','project',id,'success',?,?,?,?,? FROM projects WHERE id=? AND workspace_id=? AND deleted_at IS NULL AND status=? AND version=?`,
+        )
+        .bind(
+          auditEventId,
+          this.actor.id,
+          actorRole,
+          auditContext.accessIssuer,
+          auditContext.accessSubject,
+          auditContext.requestId,
+          auditContext.environment,
+          metadata,
+          at,
+          at,
+          id,
+          this.actor.workspaceId,
+          project.status,
+          expectedVersion,
+        ),
+      this.db
+        .prepare(
+          `UPDATE projects SET status=?,updated_at=?,updated_by=?,version=version+1 WHERE id=? AND workspace_id=? AND deleted_at IS NULL AND status=? AND version=?`,
+        )
+        .bind(
+          nextStatus,
+          at,
+          this.actor.id,
+          id,
+          this.actor.workspaceId,
+          project.status,
+          expectedVersion,
+        ),
+    ]);
+    if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) {
+      throw new Error('project_transition_conflict');
+    }
+    return {
+      id,
+      previousStatus: project.status,
+      status: nextStatus,
+      readinessStatus: project.readinessStatus,
+      version: expectedVersion + 1,
+      auditEventId,
+    };
+  }
+
   async evaluateProject(id: string) {
     const project = await this.db
       .prepare(`SELECT id FROM projects WHERE id=? AND workspace_id=? AND deleted_at IS NULL`)
