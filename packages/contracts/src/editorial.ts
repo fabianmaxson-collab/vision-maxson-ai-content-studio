@@ -16,7 +16,12 @@ export const artifactTypeSchema = z.enum([
   'STORYBOARD',
   'PREFLIGHT',
 ]);
-export const artifactSourceTypeSchema = z.enum(['AI_GENERATED', 'HUMAN_EDITED', 'IMPORTED']);
+export const artifactSourceTypeSchema = z.enum([
+  'AI_GENERATED',
+  'HUMAN_EDITED',
+  'IMPORTED',
+  'DETERMINISTIC',
+]);
 export const createArtifactVersionSchema = z
   .object({
     artifactType: artifactTypeSchema,

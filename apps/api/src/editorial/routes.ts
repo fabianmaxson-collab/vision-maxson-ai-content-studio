@@ -14,6 +14,7 @@ import {
   type BoundedExecutionProfile,
 } from '@vision-maxson/providers/execution-profile';
 import { EditorialExecutionService } from './execution';
+import { DeterministicPreflightService } from './preflight';
 import { authorizePhase3Envelope } from './budget';
 import { EditorialRepository, type EditorialActor } from './repository';
 import type { z } from 'zod';
@@ -147,16 +148,48 @@ editorialRoutes.post(
   },
 );
 editorialRoutes.post(
+  '/projects/:projectId/preflight',
+  requirePermission('editorial:write'),
+  async (c) => {
+    const body: unknown = await c.req.json().catch(() => ({}));
+    if (typeof body !== 'object' || body === null || Object.keys(body).length !== 0)
+      return problem(c, 422, 'Validation Failed', 'Deterministic Preflight accepts an empty body.');
+    try {
+      const result = await new DeterministicPreflightService(
+        c.env.DB,
+        c.get('user'),
+        c.get('requestId'),
+        c.env.ENVIRONMENT,
+      ).calculate(c.req.param('projectId'));
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        error instanceof Error ? error.message : 'preflight_failed',
+      );
+    }
+  },
+);
+editorialRoutes.post(
   '/editorial-artifact-versions/:versionId/approve',
   requirePermission('editorial:approve'),
   async (c) => {
     const parsed = approvalSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return problem(c, 422, 'Validation Failed', 'Invalid approval.');
     try {
+      const readiness = await new DeterministicPreflightService(
+        c.env.DB,
+        c.get('user'),
+        c.get('requestId'),
+        c.env.ENVIRONMENT,
+      ).readinessForApproval(c.req.param('versionId'), parsed.data.decision);
       const result = await new EditorialRepository(c.env.DB, c.get('user')).approve(
         c.req.param('versionId'),
         parsed.data.decision,
         parsed.data.comment,
+        readiness,
       );
       await audit(c, 'artifact.approval_recorded', 'editorial_artifact_version', result.versionId);
       return c.json(result, 201);

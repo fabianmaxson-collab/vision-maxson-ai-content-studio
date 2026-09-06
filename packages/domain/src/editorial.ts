@@ -9,7 +9,7 @@ export const artifactTypes = [
   'PREFLIGHT',
 ] as const;
 export type ArtifactType = (typeof artifactTypes)[number];
-export type ArtifactSourceType = 'AI_GENERATED' | 'HUMAN_EDITED' | 'IMPORTED';
+export type ArtifactSourceType = 'AI_GENERATED' | 'HUMAN_EDITED' | 'IMPORTED' | 'DETERMINISTIC';
 export type DependencyValidity =
   'CURRENT' | 'STALE' | 'INVALIDATED' | 'REGENERATION_REQUIRED' | 'REAPPROVAL_REQUIRED';
 export type AssessmentResult = 'PASS' | 'WARNING' | 'BLOCKED' | 'UNKNOWN';

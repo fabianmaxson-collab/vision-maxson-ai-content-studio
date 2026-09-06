@@ -169,6 +169,12 @@ export class EditorialExecutionService {
   ) {}
 
   async execute(projectId: string, task: Task, command: Command, idempotencyKey: string) {
+    if (task === 'PREFLIGHT_ANALYSIS')
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'Preflight is deterministic and cannot use a provider.',
+      );
     const commandHash = await digest({ projectId, task, command });
     const existing = await this.db
       .prepare(
@@ -484,115 +490,6 @@ export class EditorialExecutionService {
     }
   }
 
-  async deterministicPreflight(projectId: string) {
-    if (!(await this.terminalSchemaReady()))
-      throw new ProviderError(
-        'UNAVAILABLE',
-        false,
-        'Terminal pipeline schema capability is unavailable.',
-      );
-    const project = await this.db
-      .prepare(
-        `SELECT primary_language AS primaryLanguage FROM projects WHERE id=? AND workspace_id=? AND deleted_at IS NULL`,
-      )
-      .bind(projectId, this.actor.workspaceId)
-      .first<{ primaryLanguage: string }>();
-    if (!project) throw new ProviderError('PERMANENT', false, 'Project not found.');
-    const required = [
-      'RESEARCH',
-      'IDEA_CANDIDATE',
-      'CONTENT_BRIEF',
-      'PRODUCTION_SCRIPT',
-      'SCRIPT_CRITIQUE',
-      'STORYBOARD',
-      ...(project.primaryLanguage === 'es' ? [] : ['REVIEW_TRANSLATION']),
-    ];
-    const rows = await this.db
-      .prepare(
-        `SELECT artifact_type AS artifactType,status FROM editorial_artifacts WHERE project_id=? AND workspace_id=? AND deleted_at IS NULL`,
-      )
-      .bind(projectId, this.actor.workspaceId)
-      .all<{ artifactType: string; status: string }>();
-    const checks = required.map((type) => ({
-      key: `approved_${type.toLowerCase()}`,
-      result: rows.results.some((row) => row.artifactType === type && row.status === 'approved')
-        ? 'PASS'
-        : 'BLOCKED',
-      explanation: rows.results.some(
-        (row) => row.artifactType === type && row.status === 'approved',
-      )
-        ? `${type} aprobado.`
-        : `Falta una versión aprobada de ${type}.`,
-    }));
-    const overall = checks.every((check) => check.result === 'PASS') ? 'PASS' : 'BLOCKED',
-      at = now(),
-      artifactId = newId('artifact'),
-      versionId = newId('artifact_version'),
-      assessmentId = newId('preflight'),
-      value = { checks, recommendation: overall },
-      content = JSON.stringify(value),
-      contentHash = await digest(value);
-    const statements: D1PreparedStatement[] = [
-      this.db
-        .prepare(
-          `INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,status,current_version_id,created_at,updated_at,version,created_by,updated_by) VALUES(?,?,?,'PREFLIGHT','active',?,?,?,?,?,?)`,
-        )
-        .bind(
-          artifactId,
-          this.actor.workspaceId,
-          projectId,
-          versionId,
-          at,
-          at,
-          1,
-          this.actor.id,
-          this.actor.id,
-        ),
-      this.db
-        .prepare(
-          `INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,parent_version_id,language_code,content_text,content_json,source_type,intelligence_run_id,content_hash,word_count,source_script_version_id,created_at,created_by) VALUES(?,?,?,1,NULL,'es',NULL,?,'HUMAN_EDITED',NULL,?,NULL,NULL,?,?)`,
-        )
-        .bind(
-          versionId,
-          this.actor.workspaceId,
-          artifactId,
-          content,
-          contentHash,
-          at,
-          this.actor.id,
-        ),
-      this.db
-        .prepare(
-          `INSERT INTO preflight_assessments(id,workspace_id,project_id,artifact_id,artifact_version_id,overall_result,generation_readiness,rule_set_version,assessed_at,assessed_by) VALUES(?,?,?,?,?,?,'NOT_READY','phase3-v1',?,?)`,
-        )
-        .bind(
-          assessmentId,
-          this.actor.workspaceId,
-          projectId,
-          artifactId,
-          versionId,
-          overall,
-          at,
-          this.actor.id,
-        ),
-    ];
-    for (const check of checks)
-      statements.push(
-        this.db
-          .prepare(
-            `INSERT INTO preflight_checks(id,preflight_assessment_id,check_key,result,explanation,evidence_json,rule_version,override_allowed,created_at) VALUES(?,?,?,?,?,'{}','phase3-v1',0,?)`,
-          )
-          .bind(newId('check'), assessmentId, check.key, check.result, check.explanation, at),
-      );
-    await this.db.batch(statements);
-    return {
-      artifactId,
-      versionId,
-      overallResult: overall,
-      generationReadiness: 'NOT_READY',
-      checks,
-    };
-  }
   async getRun(runId: string) {
     return this.db
       .prepare(

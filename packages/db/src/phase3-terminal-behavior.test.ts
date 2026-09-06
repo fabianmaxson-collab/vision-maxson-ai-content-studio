@@ -8,6 +8,7 @@ const files = [
   '../migrations/0002_phase_3_editorial_intelligence.sql',
   '../migrations/0003_editorial_execution_budgets.sql',
   '../migrations/0004_terminal_pipeline_hardening.sql',
+  '../migrations/0005_deterministic_preflight_provenance.sql',
 ] as const;
 let db: DatabaseSync;
 function foundation() {

@@ -141,7 +141,7 @@ export class EditorialRepository {
         )
         .bind(existing.currentVersionId, this.actor.workspaceId)
         .all<{ id: string; artifactType: ArtifactType }>();
-      for (const dependent of dependents.results)
+      for (const dependent of dependents.results) {
         statements.push(
           this.db
             .prepare(
@@ -156,12 +156,26 @@ export class EditorialRepository {
               this.actor.workspaceId,
             ),
         );
+        if (dependent.artifactType === 'PREFLIGHT')
+          statements.push(
+            this.db
+              .prepare(
+                `UPDATE preflight_assessments SET generation_readiness='NOT_READY' WHERE artifact_version_id=(SELECT dependent_artifact_version_id FROM artifact_dependencies WHERE id=?) AND workspace_id=?`,
+              )
+              .bind(dependent.id, this.actor.workspaceId),
+          );
+      }
     }
     await this.db.batch(statements);
     return { artifactId, versionId, versionNumber, contentHash: hash };
   }
 
-  async approve(versionId: string, decision: 'APPROVED' | 'REJECTED', comment: string | null) {
+  async approve(
+    versionId: string,
+    decision: 'APPROVED' | 'REJECTED',
+    comment: string | null,
+    preflightReadiness: 'READY_FOR_GENERATION' | 'NOT_READY' | null = null,
+  ) {
     const version = await this.db
       .prepare(
         `SELECT v.id,v.artifact_id AS artifactId,a.current_version_id AS currentVersionId FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE v.id=? AND v.workspace_id=?`,
@@ -202,9 +216,9 @@ export class EditorialRepository {
         ),
       this.db
         .prepare(
-          `UPDATE preflight_assessments SET generation_readiness=CASE WHEN ?='APPROVED' AND overall_result='PASS' AND NOT EXISTS(SELECT 1 FROM preflight_checks WHERE preflight_assessment_id=preflight_assessments.id AND result!='PASS') THEN 'READY_FOR_GENERATION' ELSE 'NOT_READY' END WHERE artifact_version_id=? AND workspace_id=?`,
+          `UPDATE preflight_assessments SET generation_readiness=? WHERE artifact_version_id=? AND workspace_id=?`,
         )
-        .bind(decision, versionId, this.actor.workspaceId),
+        .bind(preflightReadiness ?? 'NOT_READY', versionId, this.actor.workspaceId),
     ]);
     return { approvalId, versionId, decision };
   }
