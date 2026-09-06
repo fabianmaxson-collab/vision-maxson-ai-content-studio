@@ -202,6 +202,40 @@ export const intelligenceCommandSchema = z
     if (value.mode === 'LOCKED' && (!value.preferredProviderKey || !value.preferredModelKey))
       context.addIssue({ code: 'custom', message: 'LOCKED requires provider and model' });
   });
+export const governedTerminalBudgetSchema = z
+  .object({
+    profileKey: z.literal('phase3_terminal_graph_v1'),
+    profileVersion: z.literal(1),
+    monetaryCeilingMicrousd: z.number().int().positive(),
+    stages: z
+      .array(
+        z
+          .object({
+            stageKey: z.enum([
+              'TOPIC_RESEARCH',
+              'IDEA_GENERATION',
+              'CONTENT_BRIEF',
+              'SCRIPT_CRITIC',
+              'STORYBOARD_PLANNER',
+            ]),
+            providerKey: z.string().min(1).max(100),
+            modelKey: z.string().min(1).max(200),
+            monetaryCeilingMicrousd: z.number().int().positive(),
+          })
+          .strict(),
+      )
+      .length(5),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.stages.map((stage) => stage.stageKey)).size !== value.stages.length)
+      context.addIssue({ code: 'custom', message: 'Governed stages must be unique' });
+    if (
+      value.stages.reduce((sum, stage) => sum + stage.monetaryCeilingMicrousd, 0) >
+      value.monetaryCeilingMicrousd
+    )
+      context.addIssue({ code: 'custom', message: 'Stage ceilings exceed project budget' });
+  });
 export const terminalDependencyTypeSchema = z.enum([
   'GENERATED_FROM',
   'USES_RESEARCH',

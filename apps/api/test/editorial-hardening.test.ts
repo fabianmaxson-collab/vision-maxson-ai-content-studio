@@ -98,7 +98,9 @@ describe('editorial routing and budget hardening', () => {
       execution.indexOf('new OpenAIResponsesAdapter'),
     ));
   it('validates exact bounded provider material before dispatch without duplicating context', () => {
-    expect(execution).toContain('const providerRequestInput = boundedStep ? {} : providerInput');
+    expect(execution).toContain(
+      'const providerRequestInput = boundedStep || governedStage ? {} : providerInput',
+    );
     expect(execution).toContain('input: providerRequestInput');
     expect(execution).toContain('renderPrompt(prompt.templateText, providerInput)');
     expect(execution.indexOf('Provider-bound input exceeds')).toBeLessThan(

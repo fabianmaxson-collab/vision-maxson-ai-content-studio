@@ -3,6 +3,15 @@ import type { ReasoningEffort } from './index';
 export const PHASE3_SHORT_EN_REVIEW_ES_PROFILE = 'phase3_short_en_review_es_v1' as const;
 export const PHASE3_SHORT_DE_REVIEW_ES_PROFILE = 'phase3_short_de_review_es_v1' as const;
 export type BoundedProfileStep = 'SCRIPT_WRITER_SHORT' | 'REVIEW_TRANSLATION_ES';
+export const PHASE3_TERMINAL_GOVERNED_PROFILE = 'phase3_terminal_graph_v1' as const;
+export const governedTerminalStages = [
+  'TOPIC_RESEARCH',
+  'IDEA_GENERATION',
+  'CONTENT_BRIEF',
+  'SCRIPT_CRITIC',
+  'STORYBOARD_PLANNER',
+] as const;
+export type GovernedTerminalStage = (typeof governedTerminalStages)[number];
 
 export interface BoundedStepPolicy {
   maxOutputTokens: number;
@@ -10,6 +19,24 @@ export interface BoundedStepPolicy {
   timeoutMs: number;
   inputTokenCeiling: number;
   reasoningEffort: ReasoningEffort;
+}
+export interface GovernedTerminalStagePolicy {
+  maximumAttempts: 1;
+  inputTokenCeiling: number;
+}
+
+export const governedTerminalStagePolicies: Readonly<
+  Record<GovernedTerminalStage, GovernedTerminalStagePolicy>
+> = Object.freeze({
+  TOPIC_RESEARCH: Object.freeze({ maximumAttempts: 1, inputTokenCeiling: 32_768 }),
+  IDEA_GENERATION: Object.freeze({ maximumAttempts: 1, inputTokenCeiling: 32_768 }),
+  CONTENT_BRIEF: Object.freeze({ maximumAttempts: 1, inputTokenCeiling: 32_768 }),
+  SCRIPT_CRITIC: Object.freeze({ maximumAttempts: 1, inputTokenCeiling: 32_768 }),
+  STORYBOARD_PLANNER: Object.freeze({ maximumAttempts: 1, inputTokenCeiling: 32_768 }),
+});
+
+export function isGovernedTerminalStage(task: string): task is GovernedTerminalStage {
+  return governedTerminalStages.includes(task as GovernedTerminalStage);
 }
 
 const boundedSteps = Object.freeze({

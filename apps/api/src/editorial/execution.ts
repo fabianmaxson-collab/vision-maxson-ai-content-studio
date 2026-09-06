@@ -24,10 +24,14 @@ import {
   conservativeInputTokenUpperBound,
   isBoundedProfileStep,
   isProjectEligibleForBoundedProfile,
+  governedTerminalStagePolicies,
+  isGovernedTerminalStage,
   type BoundedExecutionProfile,
 } from '@vision-maxson/providers/execution-profile';
 import { calculateReservation, loadBoundedEnvelope, reservationStatement } from './budget';
+import { calculateGovernedReservation, loadGovernedTerminalEnvelope } from './governed-budget';
 import { z } from 'zod';
+import { invalidationFor, type ArtifactType } from '@vision-maxson/domain';
 import type { EditorialActor } from './repository';
 
 type Task = z.infer<typeof intelligenceTaskSchema>;
@@ -48,6 +52,10 @@ type Command = {
   creativeRegeneration: boolean;
 };
 type Row = Record<string, unknown>;
+type LineageEdge = {
+  sourceVersionId: string;
+  dependencyType: 'GENERATED_FROM' | 'USES_RESEARCH' | 'EVALUATES_SOURCE' | 'INFORMED_BY';
+};
 const promptKey: Record<Task, string> = {
   TOPIC_RESEARCH: 'topic_research',
   IDEA_GENERATION: 'idea_generation',
@@ -142,6 +150,27 @@ function validateSemantics(
       (output as { sourceScriptVersionId: string }).sourceScriptVersionId !== inputVersionId)
   )
     throw new ProviderError('SCHEMA_VALIDATION', false, 'Spanish review provenance is invalid.');
+  if (task === 'CONTENT_BRIEF') {
+    const researchIds = (project.lineage as LineageEdge[])
+      .filter((edge) => edge.dependencyType === 'USES_RESEARCH')
+      .map((edge) => edge.sourceVersionId);
+    const outputResearchIds = (output as { researchVersionIds: string[] }).researchVersionIds;
+    if (
+      researchIds.length !== 1 ||
+      outputResearchIds.length !== 1 ||
+      outputResearchIds[0] !== researchIds[0]
+    )
+      throw new ProviderError(
+        'SCHEMA_VALIDATION',
+        false,
+        'Content Brief Research provenance is invalid.',
+      );
+  }
+  if (
+    task === 'SCRIPT_CRITIC' &&
+    (output as { sourceScriptVersionId: string }).sourceScriptVersionId !== inputVersionId
+  )
+    throw new ProviderError('SCHEMA_VALIDATION', false, 'Script Critique provenance is invalid.');
   const ordered =
     task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG'
       ? (output as { segments: { order: number }[] }).segments
@@ -265,13 +294,18 @@ export class EditorialExecutionService {
       isBoundedProfileStep(task) &&
       selected.providerKey === boundedProfile.providerKey &&
       selected.modelKey === boundedProfile.modelKey;
-    if (boundedStep && command.creativeRegeneration)
+    if ((boundedStep || isGovernedTerminalStage(task)) && command.creativeRegeneration)
       throw new ProviderError(
         'PERMANENT',
         false,
         'Creative regeneration is not allowed by the execution profile.',
       );
-    const stepPolicy = boundedStep ? boundedProfile.steps[task] : policy;
+    const governedStage = isGovernedTerminalStage(task);
+    const stepPolicy = boundedStep
+      ? boundedProfile.steps[task]
+      : governedStage
+        ? { ...policy, ...governedTerminalStagePolicies[task] }
+        : policy;
     const providerInput = boundedStep
       ? task === 'REVIEW_TRANSLATION_ES'
         ? reviewTranslationProviderContext(project, boundedProfile)
@@ -292,14 +326,19 @@ export class EditorialExecutionService {
     const providerOutputSchema = z.toJSONSchema(outputSchema[task]);
     // Bounded prompts already render the complete context into instructions. Sending it again as
     // input duplicates provider-bound content and consumes budget without adding information.
-    const providerRequestInput = boundedStep ? {} : providerInput;
+    const providerRequestInput = boundedStep || governedStage ? {} : providerInput;
+    const inputCeiling = boundedStep
+      ? boundedProfile.steps[task].inputTokenCeiling
+      : governedStage
+        ? governedTerminalStagePolicies[task].inputTokenCeiling
+        : null;
     if (
-      boundedStep &&
+      inputCeiling !== null &&
       conservativeInputTokenUpperBound({
         instructions: providerInstructions,
         input: providerRequestInput,
         outputSchema: providerOutputSchema,
-      }) > boundedProfile.steps[task].inputTokenCeiling
+      }) > inputCeiling
     )
       throw new ProviderError(
         'PERMANENT',
@@ -308,10 +347,14 @@ export class EditorialExecutionService {
       );
     const envelope = boundedStep
       ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected, boundedProfile)
-      : null;
+      : governedStage
+        ? await loadGovernedTerminalEnvelope(this.db, this.actor, projectId, task, selected)
+        : null;
     const reservedMicrousd = boundedStep
       ? calculateReservation(selectedRow, task, boundedProfile)
-      : null;
+      : governedStage
+        ? calculateGovernedReservation(selectedRow, task)
+        : null;
     const runId = newId('intelligence_run'),
       at = now();
     const regeneration = command.creativeRegeneration ? 1 : 0;
@@ -337,7 +380,7 @@ export class EditorialExecutionService {
         at,
         at,
       );
-    if (boundedStep && envelope && reservedMicrousd !== null) {
+    if ((boundedStep || governedStage) && envelope && reservedMicrousd !== null) {
       try {
         await this.db.batch([
           insertRun,
@@ -350,6 +393,9 @@ export class EditorialExecutionService {
             pricingSnapshotId: String(selectedRow.pricingSnapshotId),
             reservedMicrousd,
             at,
+            projectExecutionBudgetId: governedStage
+              ? String(envelope.projectExecutionBudgetId)
+              : null,
           }),
         ]);
         await this.db
@@ -429,8 +475,24 @@ export class EditorialExecutionService {
         runId,
         command.inputArtifactVersionId,
         project.primaryLanguage,
+        ((project.lineage as LineageEdge[] | undefined) ?? []).length
+          ? (project.lineage as LineageEdge[])
+          : command.inputArtifactVersionId
+            ? [
+                {
+                  sourceVersionId: command.inputArtifactVersionId,
+                  dependencyType: 'GENERATED_FROM',
+                },
+              ]
+            : [],
         parsed.data,
-        { result, costs, metadata, boundedStep, reservedMicrousd },
+        {
+          result,
+          costs,
+          metadata,
+          governed: boundedStep || governedStage,
+          reservedMicrousd,
+        },
       );
       return {
         run: {
@@ -454,7 +516,7 @@ export class EditorialExecutionService {
           )
           .bind(terminalStatus, mapped.category, mapped.message, terminalAt, runId),
       ];
-      if (boundedStep)
+      if (boundedStep || governedStage)
         statements.push(
           this.db
             .prepare(
@@ -537,6 +599,98 @@ export class EditorialExecutionService {
       )
       .bind(projectId, this.actor.workspaceId)
       .all<Row>();
+    const lineage: LineageEdge[] = [];
+    const exactCurrentApproved = async (versionId: string | null, artifactType: string) => {
+      if (!versionId)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          `Exact approved ${artifactType} input is required.`,
+        );
+      const row = await this.db
+        .prepare(
+          `SELECT v.id versionId,a.id artifactId,a.artifact_type artifactType,v.content_json contentJson,v.content_text contentText,v.language_code languageCode FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id WHERE v.id=? AND v.workspace_id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type=? AND a.status='approved' AND a.deleted_at IS NULL`,
+        )
+        .bind(versionId, this.actor.workspaceId, this.actor.workspaceId, projectId, artifactType)
+        .first<Row>();
+      if (!row)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          `Exact approved current ${artifactType} input is required.`,
+        );
+      return row;
+    };
+    if (task === 'TOPIC_RESEARCH' && inputVersionId !== null)
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'Research does not accept an editorial input version.',
+      );
+    if (task === 'IDEA_GENERATION') {
+      const research = await exactCurrentApproved(inputVersionId, 'RESEARCH');
+      lineage.push({
+        sourceVersionId: String(research.versionId),
+        dependencyType: 'GENERATED_FROM',
+      });
+    }
+    if (task === 'CONTENT_BRIEF') {
+      const idea = await exactCurrentApproved(inputVersionId, 'IDEA_CANDIDATE');
+      const selected = await this.db
+        .prepare(
+          `SELECT id FROM idea_candidates WHERE artifact_version_id=? AND workspace_id=? AND project_id=? AND status='SELECTED'`,
+        )
+        .bind(idea.versionId, this.actor.workspaceId, projectId)
+        .first();
+      if (!selected)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The exact approved current Idea must be selected.',
+        );
+      const research = await this.db
+        .prepare(
+          `SELECT rv.id versionId FROM artifact_dependencies d JOIN editorial_artifact_versions rv ON rv.id=d.source_artifact_version_id JOIN editorial_artifacts ra ON ra.id=rv.artifact_id AND ra.current_version_id=rv.id WHERE d.dependent_artifact_version_id=? AND d.dependency_type='GENERATED_FROM' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL AND ra.workspace_id=? AND ra.project_id=? AND ra.artifact_type='RESEARCH' AND ra.status='approved' AND ra.deleted_at IS NULL`,
+        )
+        .bind(idea.versionId, this.actor.workspaceId, projectId)
+        .first<Row>();
+      if (!research)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The selected Idea requires its exact approved current Research source.',
+        );
+      lineage.push(
+        { sourceVersionId: String(idea.versionId), dependencyType: 'GENERATED_FROM' },
+        { sourceVersionId: String(research.versionId), dependencyType: 'USES_RESEARCH' },
+      );
+    }
+    if (task === 'SCRIPT_CRITIC') {
+      const script = await exactCurrentApproved(inputVersionId, 'PRODUCTION_SCRIPT');
+      lineage.push({
+        sourceVersionId: String(script.versionId),
+        dependencyType: 'EVALUATES_SOURCE',
+      });
+    }
+    if (task === 'STORYBOARD_PLANNER') {
+      const script = await exactCurrentApproved(inputVersionId, 'PRODUCTION_SCRIPT');
+      const critique = await this.db
+        .prepare(
+          `SELECT cv.id versionId FROM artifact_dependencies d JOIN editorial_artifact_versions cv ON cv.id=d.dependent_artifact_version_id JOIN editorial_artifacts ca ON ca.id=cv.artifact_id AND ca.current_version_id=cv.id WHERE d.source_artifact_version_id=? AND d.dependency_type='EVALUATES_SOURCE' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL AND ca.workspace_id=? AND ca.project_id=? AND ca.artifact_type='SCRIPT_CRITIQUE' AND ca.status='approved' AND ca.deleted_at IS NULL`,
+        )
+        .bind(script.versionId, this.actor.workspaceId, projectId)
+        .first<Row>();
+      if (!critique)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Storyboard requires the exact approved current Script Critique.',
+        );
+      lineage.push(
+        { sourceVersionId: String(script.versionId), dependencyType: 'GENERATED_FROM' },
+        { sourceVersionId: String(critique.versionId), dependencyType: 'INFORMED_BY' },
+      );
+    }
     let exactSource: Row | null = null;
     if (task === 'REVIEW_TRANSLATION_ES') {
       if (!inputVersionId)
@@ -570,6 +724,7 @@ export class EditorialExecutionService {
       ...project,
       reviewLocale: 'es',
       exactSource,
+      lineage,
       approvedArtifacts: artifacts.results.map((item) => ({
         ...item,
         contentText: typeof item.contentText === 'string' ? item.contentText : null,
@@ -728,12 +883,13 @@ export class EditorialExecutionService {
     runId: string,
     inputVersionId: string | null,
     language: string,
+    lineage: LineageEdge[],
     output: unknown,
     completion: {
       result: ProviderExecutionResult;
       costs: { actualCost: number | null; currency: string | null };
       metadata: Row;
-      boundedStep: boolean;
+      governed: boolean;
       reservedMicrousd: number | null;
     },
   ) {
@@ -782,6 +938,38 @@ export class EditorialExecutionService {
               this.actor.id,
             ),
         );
+      if (existing?.currentVersionId) {
+        const dependents = await this.db
+          .prepare(
+            `SELECT d.id,a.artifact_type artifactType FROM artifact_dependencies d JOIN editorial_artifact_versions v ON v.id=d.dependent_artifact_version_id JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE d.source_artifact_version_id=? AND d.workspace_id=? AND d.validity_status='CURRENT'`,
+          )
+          .bind(existing.currentVersionId, this.actor.workspaceId)
+          .all<{ id: string; artifactType: ArtifactType }>();
+        for (const dependent of dependents.results) {
+          statements.push(
+            this.db
+              .prepare(
+                `UPDATE artifact_dependencies SET validity_status=?,invalidated_at=?,invalidated_by_version_id=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
+              )
+              .bind(
+                invalidationFor(dependent.artifactType),
+                at,
+                versionId,
+                at,
+                dependent.id,
+                this.actor.workspaceId,
+              ),
+          );
+          if (dependent.artifactType === 'PREFLIGHT')
+            statements.push(
+              this.db
+                .prepare(
+                  `UPDATE preflight_assessments SET generation_readiness='NOT_READY' WHERE artifact_version_id=(SELECT dependent_artifact_version_id FROM artifact_dependencies WHERE id=?) AND workspace_id=?`,
+                )
+                .bind(dependent.id, this.actor.workspaceId),
+            );
+        }
+      }
       statements.push(
         this.db
           .prepare(
@@ -810,13 +998,21 @@ export class EditorialExecutionService {
           )
           .bind(versionId, at, this.actor.id, artifactId, this.actor.workspaceId),
       );
-      if (inputVersionId)
+      for (const edge of lineage)
         statements.push(
           this.db
             .prepare(
-              `INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version) VALUES(?,?,?,?,'GENERATED_FROM','CURRENT',?,?,1)`,
+              `INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version) VALUES(?,?,?,?,?,'CURRENT',?,?,1)`,
             )
-            .bind(newId('dependency'), this.actor.workspaceId, inputVersionId, versionId, at, at),
+            .bind(
+              newId('dependency'),
+              this.actor.workspaceId,
+              edge.sourceVersionId,
+              versionId,
+              edge.dependencyType,
+              at,
+              at,
+            ),
         );
       return { artifactId, versionId };
     };
@@ -1016,7 +1212,7 @@ export class EditorialExecutionService {
           runId,
         ),
     );
-    if (completion.boundedStep) {
+    if (completion.governed) {
       const actualMicrousd =
         completion.costs.actualCost === null
           ? null

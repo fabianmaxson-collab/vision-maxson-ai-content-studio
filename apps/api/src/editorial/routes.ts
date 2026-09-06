@@ -1,6 +1,7 @@
 import {
   approvalSchema,
   createArtifactVersionSchema,
+  governedTerminalBudgetSchema,
   intelligenceCommandSchema,
   type intelligenceTaskSchema,
 } from '@vision-maxson/contracts';
@@ -16,6 +17,7 @@ import {
 import { EditorialExecutionService } from './execution';
 import { DeterministicPreflightService } from './preflight';
 import { authorizePhase3Envelope } from './budget';
+import { authorizeGovernedTerminalBudget } from './governed-budget';
 import { EditorialRepository, type EditorialActor } from './repository';
 import type { z } from 'zod';
 
@@ -251,6 +253,39 @@ for (const profile of envelopeProfiles)
     },
   );
 
+editorialRoutes.post(
+  '/admin/projects/:projectId/editorial-project-execution-budgets',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const parsed = governedTerminalBudgetSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success)
+      return problem(c, 422, 'Validation Failed', 'The governed terminal budget is invalid.');
+    try {
+      const result = await authorizeGovernedTerminalBudget(
+        c.env.DB,
+        c.get('user'),
+        c.req.param('projectId'),
+        parsed.data,
+      );
+      if (!result.idempotent)
+        await audit(
+          c,
+          'editorial.project_execution_budget_authorized',
+          'editorial_project_execution_budget',
+          result.budget.id,
+          { profileKey: parsed.data.profileKey, profileVersion: parsed.data.profileVersion },
+        );
+      return c.json(result, result.idempotent ? 200 : 201);
+    } catch (error) {
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        error instanceof Error ? error.message : 'governed_terminal_budget_authorization_failed',
+      );
+    }
+  },
+);
 type IntelligenceTask = z.infer<typeof intelligenceTaskSchema>;
 const taskRoutes: ReadonlyArray<readonly [string, IntelligenceTask]> = [
   ['/projects/:projectId/research/generate', 'TOPIC_RESEARCH'],

@@ -4,6 +4,7 @@ import {
   reserveMicrousd,
   type BoundedExecutionProfile,
   type BoundedProfileStep,
+  type GovernedTerminalStage,
 } from '@vision-maxson/providers/execution-profile';
 import type { EditorialActor } from './repository';
 
@@ -157,15 +158,16 @@ export function reservationStatement(
     workspaceId: string;
     projectId: string;
     runId: string;
-    step: BoundedProfileStep;
+    step: BoundedProfileStep | GovernedTerminalStage;
     pricingSnapshotId: string;
     reservedMicrousd: number;
     at: string;
+    projectExecutionBudgetId?: string | null;
   },
 ) {
   return db
     .prepare(
-      `INSERT INTO editorial_execution_reservations(id,envelope_id,workspace_id,project_id,intelligence_run_id,step_key,pricing_snapshot_id,reserved_microusd,status,created_at) VALUES(?,?,?,?,?,?,?,?,'RESERVED',?)`,
+      `INSERT INTO editorial_execution_reservations(id,envelope_id,workspace_id,project_id,intelligence_run_id,step_key,pricing_snapshot_id,reserved_microusd,status,created_at,project_execution_budget_id) VALUES(?,?,?,?,?,?,?,?,'RESERVED',?,?)`,
     )
     .bind(
       newId('execution_reservation'),
@@ -177,5 +179,6 @@ export function reservationStatement(
       args.pricingSnapshotId,
       args.reservedMicrousd,
       args.at,
+      args.projectExecutionBudgetId ?? null,
     );
 }
