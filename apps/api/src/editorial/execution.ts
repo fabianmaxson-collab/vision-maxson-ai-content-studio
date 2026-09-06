@@ -31,7 +31,15 @@ import { z } from 'zod';
 import type { EditorialActor } from './repository';
 
 type Task = z.infer<typeof intelligenceTaskSchema>;
-type ExecutionConfig = { openAIEnabled: boolean; openAIApiKey?: string; openAIBaseUrl: string };
+type ExecutionConfig = {
+  openAIEnabled: boolean;
+  openAIApiKey?: string;
+  openAIBaseUrl: string;
+  requestId?: string;
+  environment?: string;
+  accessIssuer?: string;
+  accessSubject?: string;
+};
 type Command = {
   mode: RoutingMode;
   preferredProviderKey?: string;
@@ -181,6 +189,12 @@ export class EditorialExecutionService {
         );
       return { run: existing, idempotentReplay: true };
     }
+    if (!(await this.terminalSchemaReady()))
+      throw new ProviderError(
+        'UNAVAILABLE',
+        false,
+        'Terminal pipeline schema capability is unavailable.',
+      );
     if (!this.config.openAIEnabled || !this.config.openAIApiKey)
       throw new ProviderNotConfiguredError();
     const project = await this.projectContext(projectId, task, command.inputArtifactVersionId);
@@ -410,22 +424,8 @@ export class EditorialExecutionService {
         command.inputArtifactVersionId,
         project.primaryLanguage,
         parsed.data,
-        { result, costs, metadata },
+        { result, costs, metadata, boundedStep, reservedMicrousd },
       );
-      if (boundedStep)
-        await this.db
-          .prepare(
-            `UPDATE editorial_execution_reservations SET status='RECONCILED',actual_microusd=?,reconciled_at=? WHERE intelligence_run_id=? AND status='DISPATCHED'`,
-          )
-          .bind(
-            Math.ceil(
-              (costs.actualCost ?? reservedMicrousd ?? 0) *
-                (costs.actualCost === null ? 1 : 1_000_000),
-            ),
-            now(),
-            runId,
-          )
-          .run();
       return {
         run: {
           id: runId,
@@ -438,32 +438,59 @@ export class EditorialExecutionService {
       };
     } catch (error) {
       const mapped = safeError(error);
-      if (boundedStep)
-        await this.db
+      const terminalAt = now();
+      const auditId = newId('audit');
+      const terminalStatus = mapped.retryable ? 'FAILED_RETRYABLE' : 'FAILED_PERMANENT';
+      const statements: D1PreparedStatement[] = [
+        this.db
           .prepare(
-            `UPDATE editorial_execution_reservations SET status='AMBIGUOUS' WHERE intelligence_run_id=? AND status IN ('RESERVED','DISPATCHED')`,
+            `UPDATE intelligence_run_attempts SET status=?,error_category=?,safe_error_detail=?,completed_at=? WHERE intelligence_run_id=? AND status='RUNNING'`,
           )
-          .bind(runId)
-          .run();
-      await this.db
-        .prepare(
-          `UPDATE intelligence_runs SET status=?,error_category=?,safe_error_detail=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
-        )
-        .bind(
-          mapped.retryable ? 'FAILED_RETRYABLE' : 'FAILED_PERMANENT',
-          mapped.category,
-          mapped.message,
-          now(),
-          now(),
+          .bind(terminalStatus, mapped.category, mapped.message, terminalAt, runId),
+      ];
+      if (boundedStep)
+        statements.push(
+          this.db
+            .prepare(
+              `UPDATE editorial_execution_reservations SET status='AMBIGUOUS',reconciled_at=? WHERE intelligence_run_id=? AND status IN ('RESERVED','DISPATCHED')`,
+            )
+            .bind(terminalAt, runId),
+        );
+      statements.push(
+        this.terminalAuditStatement(
+          auditId,
           runId,
-          this.actor.workspaceId,
-        )
-        .run();
+          'intelligence.run_failed',
+          'failure',
+          terminalAt,
+        ),
+        this.db
+          .prepare(
+            `UPDATE intelligence_runs SET status=?,error_category=?,safe_error_detail=?,terminal_audit_event_id=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
+          )
+          .bind(
+            terminalStatus,
+            mapped.category,
+            mapped.message,
+            auditId,
+            terminalAt,
+            terminalAt,
+            runId,
+            this.actor.workspaceId,
+          ),
+      );
+      await this.db.batch(statements);
       throw mapped;
     }
   }
 
   async deterministicPreflight(projectId: string) {
+    if (!(await this.terminalSchemaReady()))
+      throw new ProviderError(
+        'UNAVAILABLE',
+        false,
+        'Terminal pipeline schema capability is unavailable.',
+      );
     const project = await this.db
       .prepare(
         `SELECT primary_language AS primaryLanguage FROM projects WHERE id=? AND workspace_id=? AND deleted_at IS NULL`,
@@ -710,13 +737,12 @@ export class EditorialExecutionService {
     return {
       started: async (attempt: number) => {
         const at = now();
-        await this.db
-          .prepare(
-            `UPDATE editorial_execution_reservations SET status='DISPATCHED',dispatched_at=? WHERE intelligence_run_id=? AND status='RESERVED'`,
-          )
-          .bind(at, runId)
-          .run();
         await this.db.batch([
+          this.db
+            .prepare(
+              `UPDATE editorial_execution_reservations SET status='DISPATCHED',dispatched_at=? WHERE intelligence_run_id=? AND status='RESERVED'`,
+            )
+            .bind(at, runId),
           this.db
             .prepare(
               `UPDATE intelligence_runs SET status='RUNNING',started_at=COALESCE(started_at,?),updated_at=?,version=version+1 WHERE id=?`,
@@ -729,36 +755,56 @@ export class EditorialExecutionService {
             .bind(newId('attempt'), runId, attempt, at),
         ]);
       },
-      succeeded: async (attempt: number, result: ProviderExecutionResult) => {
-        await this.db
-          .prepare(
-            `UPDATE intelligence_run_attempts SET status='SUCCEEDED',provider_request_id=?,safe_metadata_json=?,completed_at=? WHERE intelligence_run_id=? AND attempt_number=?`,
-          )
-          .bind(
-            result.providerRequestId,
-            JSON.stringify(result.safeMetadata),
-            now(),
-            runId,
-            attempt,
-          )
-          .run();
+      succeeded: (attempt: number, result: ProviderExecutionResult) => {
+        void attempt;
+        void result;
+        return Promise.resolve();
       },
-      failed: async (attempt: number, error: ProviderError) => {
-        await this.db
-          .prepare(
-            `UPDATE intelligence_run_attempts SET status=?,error_category=?,safe_error_detail=?,completed_at=? WHERE intelligence_run_id=? AND attempt_number=?`,
-          )
-          .bind(
-            error.retryable ? 'FAILED_RETRYABLE' : 'FAILED_PERMANENT',
-            error.category,
-            error.message,
-            now(),
-            runId,
-            attempt,
-          )
-          .run();
+      failed: (attempt: number, error: ProviderError) => {
+        void attempt;
+        void error;
+        return Promise.resolve();
       },
     };
+  }
+  private async terminalSchemaReady() {
+    try {
+      const row = await this.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM pragma_table_info('intelligence_runs') WHERE name='terminal_audit_event_id'`,
+        )
+        .first<{ count: number }>();
+      return Number(row?.count) === 1;
+    } catch {
+      return false;
+    }
+  }
+  private terminalAuditStatement(
+    auditId: string,
+    runId: string,
+    action: 'intelligence.run_completed' | 'intelligence.run_failed',
+    outcome: 'success' | 'failure',
+    at: string,
+  ) {
+    return this.db
+      .prepare(
+        `INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,?,'intelligence_run',?,?,?,?, '{}',?,?)`,
+      )
+      .bind(
+        auditId,
+        this.actor.workspaceId,
+        this.actor.id,
+        this.actor.roles[0] ?? null,
+        this.config.accessIssuer ?? null,
+        this.config.accessSubject ?? null,
+        action,
+        runId,
+        outcome,
+        this.config.requestId ?? runId,
+        this.config.environment ?? 'runtime',
+        at,
+        at,
+      );
   }
   private cost(result: ProviderExecutionResult, row: Row) {
     const input = result.usage.inputUnits,
@@ -790,6 +836,8 @@ export class EditorialExecutionService {
       result: ProviderExecutionResult;
       costs: { actualCost: number | null; currency: string | null };
       metadata: Row;
+      boundedStep: boolean;
+      reservedMicrousd: number | null;
     },
   ) {
     const at = now();
@@ -801,35 +849,53 @@ export class EditorialExecutionService {
       outputLanguage: string,
       sourceScriptVersionId: string | null,
     ) => {
-      const artifactId = newId('artifact'),
-        versionId = newId('artifact_version'),
-        content = JSON.stringify(value),
-        contentHash = await digest(value);
+      const existing =
+        type === 'IDEA_CANDIDATE'
+          ? null
+          : await this.db
+              .prepare(
+                `SELECT a.id AS artifactId,a.current_version_id AS currentVersionId,v.version_number AS versionNumber FROM editorial_artifacts a LEFT JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.workspace_id=? AND a.project_id=? AND a.artifact_type=? AND a.deleted_at IS NULL LIMIT 1`,
+              )
+              .bind(this.actor.workspaceId, projectId, type)
+              .first<{
+                artifactId: string;
+                currentVersionId: string | null;
+                versionNumber: number | null;
+              }>();
+      const artifactId = existing?.artifactId ?? newId('artifact');
+      const versionId = newId('artifact_version');
+      const versionNumber = Number(existing?.versionNumber ?? 0) + 1;
+      const parentVersionId = existing?.currentVersionId ?? null;
+      const content = JSON.stringify(value);
+      const contentHash = await digest(value);
+      if (!existing)
+        statements.push(
+          this.db
+            .prepare(
+              `INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,status,current_version_id,created_at,updated_at,version,created_by,updated_by) VALUES(?,?,?,?,'active',NULL,?,?,1,?,?)`,
+            )
+            .bind(
+              artifactId,
+              this.actor.workspaceId,
+              projectId,
+              type,
+              at,
+              at,
+              this.actor.id,
+              this.actor.id,
+            ),
+        );
       statements.push(
         this.db
           .prepare(
-            `INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,status,current_version_id,created_at,updated_at,version,created_by,updated_by) VALUES(?,?,?,?,'active',?,?,?,?,?,?)`,
-          )
-          .bind(
-            artifactId,
-            this.actor.workspaceId,
-            projectId,
-            type,
-            versionId,
-            at,
-            at,
-            1,
-            this.actor.id,
-            this.actor.id,
-          ),
-        this.db
-          .prepare(
-            `INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,parent_version_id,language_code,content_text,content_json,source_type,intelligence_run_id,content_hash,word_count,source_script_version_id,created_at,created_by) VALUES(?,?,?,1,NULL,?,?,?,?,?,?,?,?,?,?)`,
+            `INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,parent_version_id,language_code,content_text,content_json,source_type,intelligence_run_id,content_hash,word_count,source_script_version_id,created_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .bind(
             versionId,
             this.actor.workspaceId,
             artifactId,
+            versionNumber,
+            parentVersionId,
             outputLanguage,
             contentText,
             content,
@@ -841,6 +907,11 @@ export class EditorialExecutionService {
             at,
             this.actor.id,
           ),
+        this.db
+          .prepare(
+            `UPDATE editorial_artifacts SET current_version_id=?,status='active',updated_at=?,updated_by=?,version=version+1 WHERE id=? AND workspace_id=?`,
+          )
+          .bind(versionId, at, this.actor.id, artifactId, this.actor.workspaceId),
       );
       if (inputVersionId)
         statements.push(
@@ -1035,10 +1106,41 @@ export class EditorialExecutionService {
           );
       }
     }
+    const auditId = newId('audit');
     statements.push(
       this.db
         .prepare(
-          `UPDATE intelligence_runs SET output_artifact_version_id=?,status='SUCCEEDED',input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
+          `UPDATE intelligence_run_attempts SET status='SUCCEEDED',provider_request_id=?,safe_metadata_json=?,completed_at=? WHERE intelligence_run_id=? AND status='RUNNING'`,
+        )
+        .bind(
+          completion.result.providerRequestId,
+          JSON.stringify(completion.result.safeMetadata),
+          at,
+          runId,
+        ),
+    );
+    if (completion.boundedStep) {
+      const actualMicrousd =
+        completion.costs.actualCost === null
+          ? null
+          : Math.ceil(completion.costs.actualCost * 1_000_000);
+      const reconciled =
+        actualMicrousd !== null &&
+        completion.reservedMicrousd !== null &&
+        actualMicrousd <= completion.reservedMicrousd;
+      statements.push(
+        this.db
+          .prepare(
+            `UPDATE editorial_execution_reservations SET status=?,actual_microusd=?,reconciled_at=? WHERE intelligence_run_id=? AND status='DISPATCHED'`,
+          )
+          .bind(reconciled ? 'RECONCILED' : 'AMBIGUOUS', actualMicrousd, at, runId),
+      );
+    }
+    statements.push(
+      this.terminalAuditStatement(auditId, runId, 'intelligence.run_completed', 'success', at),
+      this.db
+        .prepare(
+          `UPDATE intelligence_runs SET output_artifact_version_id=?,status='SUCCEEDED',input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,terminal_audit_event_id=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
         )
         .bind(
           outputVersionId,
@@ -1047,6 +1149,7 @@ export class EditorialExecutionService {
           completion.costs.actualCost,
           completion.costs.currency,
           JSON.stringify(completion.metadata),
+          auditId,
           at,
           at,
           runId,

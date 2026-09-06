@@ -19,8 +19,34 @@ describe('editorial routing and budget hardening', () => {
     'rejects unsafe caller override %s',
     (key) => expect(intelligenceCommandSchema.safeParse({ [key]: 1 }).success).toBe(false),
   );
-  it('does not emit a second completion audit for replay', () =>
-    expect(routes).toContain('if (!result.idempotentReplay)'));
+  it('keeps terminal auditing inside the writer and removes route-level completion audit', () => {
+    expect(routes).not.toContain("await audit(c, 'intelligence.run_completed'");
+    expect(execution).toContain('this.terminalAuditStatement(');
+    expect(execution).toContain('terminal_audit_event_id=?');
+  });
+  it('fails closed on schema 0003 before configuration, reservation, or provider construction', () => {
+    const gate = execution.indexOf('await this.terminalSchemaReady()');
+    expect(gate).toBeGreaterThan(0);
+    expect(gate).toBeLessThan(execution.indexOf('this.config.openAIEnabled'));
+    expect(gate).toBeLessThan(execution.indexOf('reservationStatement(this.db'));
+    expect(gate).toBeLessThan(execution.indexOf('new OpenAIResponsesAdapter'));
+    expect(execution).toContain("pragma_table_info('intelligence_runs')");
+  });
+  it('writes attempt, reconciliation, terminal audit, and terminal run in one success batch', () => {
+    const persistence = execution.slice(execution.indexOf('private async persist'));
+    expect(persistence).toContain("UPDATE intelligence_run_attempts SET status='SUCCEEDED'");
+    expect(persistence).toContain("reconciled ? 'RECONCILED' : 'AMBIGUOUS'");
+    expect(persistence.indexOf('this.terminalAuditStatement(')).toBeLessThan(
+      persistence.indexOf('UPDATE intelligence_runs SET output_artifact_version_id'),
+    );
+    expect(persistence).toContain('await this.db.batch(statements)');
+  });
+  it('writes failure attempt, ambiguous reservation, audit, and terminal run in one batch', () => {
+    expect(execution).toContain("'intelligence.run_failed'");
+    expect(execution).toContain("'failure'");
+    expect(execution).toContain("status='AMBIGUOUS',reconciled_at=?");
+    expect(execution).toContain('terminal_audit_event_id=?');
+  });
   it('re-reads and compares the winning command hash', () => {
     expect(execution).toContain('this.commandHash(reserved) !== commandHash');
     expect(execution).toContain('this.commandHash(winner) === commandHash');

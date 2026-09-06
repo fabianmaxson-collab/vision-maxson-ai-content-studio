@@ -233,6 +233,10 @@ const executionService = (c: Context<Env>) =>
     openAIEnabled: c.env.OPENAI_PROVIDER_ENABLED === 'true',
     ...(c.env.OPENAI_API_KEY ? { openAIApiKey: c.env.OPENAI_API_KEY } : {}),
     openAIBaseUrl: c.env.OPENAI_API_BASE_URL ?? 'https://api.openai.com/v1',
+    requestId: c.get('requestId'),
+    environment: c.env.ENVIRONMENT,
+    accessIssuer: c.get('identity').issuer,
+    accessSubject: c.get('identity').subject,
   });
 for (const [route, task] of taskRoutes)
   editorialRoutes.post(route, requirePermission('intelligence:execute'), async (c) => {
@@ -260,8 +264,6 @@ for (const [route, task] of taskRoutes)
         },
         idempotencyKey,
       );
-      if (!result.idempotentReplay)
-        await audit(c, 'intelligence.run_completed', 'intelligence_run', String(result.run?.id));
       return c.json(result, result.idempotentReplay ? 200 : 201);
     } catch (error) {
       if (error instanceof ProviderError)
