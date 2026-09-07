@@ -107,6 +107,89 @@ function renderPrompt(template: string, context: Row) {
     throw new ProviderError('PERMANENT', false, 'Prompt contains an unsupported variable.');
   return template.replaceAll('{{context_json}}', JSON.stringify(context));
 }
+const boundedExecutionProfileContext = (profile: BoundedExecutionProfile) => ({
+  key: profile.key,
+  productionLanguage: profile.productionLanguage,
+  reviewLanguage: profile.reviewLanguage,
+  externalResearchAllowed: false,
+  specializedVerificationAllowed: false,
+  humanReviewRequired: true,
+  reviewTranslationIsReviewOnly: true,
+});
+
+export function scriptWriterShortProviderContext(
+  project: Row,
+  profile: BoundedExecutionProfile,
+  inputBriefVersionId: string | null,
+) {
+  const brief = (project.approvedArtifacts as Row[] | undefined)?.find(
+    (item) => item.artifactType === 'CONTENT_BRIEF' && item.versionId === inputBriefVersionId,
+  );
+  if (
+    !inputBriefVersionId ||
+    typeof project.id !== 'string' ||
+    !brief ||
+    brief.languageCode !== profile.productionLanguage ||
+    project.format !== 'SHORT' ||
+    project.primaryLanguage !== profile.productionLanguage ||
+    typeof brief.contentJson !== 'string'
+  )
+    throw new ProviderError(
+      'PERMANENT',
+      false,
+      'The exact current approved bounded Content Brief is required for script generation.',
+    );
+  let approvedBrief: z.infer<typeof contentBriefSchema>;
+  try {
+    const parsed = contentBriefSchema.safeParse(JSON.parse(brief.contentJson));
+    if (!parsed.success)
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'The exact current approved bounded Content Brief is invalid.',
+      );
+    approvedBrief = parsed.data;
+  } catch (error) {
+    if (error instanceof ProviderError) throw error;
+    throw new ProviderError(
+      'PERMANENT',
+      false,
+      'The exact current approved bounded Content Brief is invalid.',
+    );
+  }
+  if (
+    approvedBrief.format !== 'SHORT' ||
+    approvedBrief.productionLanguage !== profile.productionLanguage ||
+    approvedBrief.reviewLanguage !== profile.reviewLanguage
+  )
+    throw new ProviderError(
+      'PERMANENT',
+      false,
+      'The exact current approved bounded Content Brief is incompatible with the execution profile.',
+    );
+  return {
+    task: 'SCRIPT_WRITER_SHORT' as const,
+    projectId: project.id,
+    productionLanguage: profile.productionLanguage,
+    inputBriefVersionId,
+    approvedBrief,
+    executionProfile: boundedExecutionProfileContext(profile),
+  };
+}
+
+export function providerBoundRequestMaterial<
+  TInput extends Row,
+  TOutputSchema extends Record<string, unknown>,
+>(template: string, context: Row, input: TInput, outputSchema: TOutputSchema) {
+  const instructions = renderPrompt(template, context);
+  return {
+    instructions,
+    input,
+    outputSchema,
+    conservativeInputUnits: conservativeInputTokenUpperBound({ instructions, input, outputSchema }),
+  };
+}
+
 export function reviewTranslationProviderContext(project: Row, profile: BoundedExecutionProfile) {
   const source = project.exactSource as Row | null;
   if (
@@ -309,37 +392,24 @@ export class EditorialExecutionService {
     const providerInput = boundedStep
       ? task === 'REVIEW_TRANSLATION_ES'
         ? reviewTranslationProviderContext(project, boundedProfile)
-        : {
-            ...project,
-            executionProfile: {
-              key: boundedProfile.key,
-              productionLanguage: boundedProfile.productionLanguage,
-              reviewLanguage: boundedProfile.reviewLanguage,
-              externalResearchAllowed: false,
-              specializedVerificationAllowed: false,
-              humanReviewRequired: true,
-              reviewTranslationIsReviewOnly: true,
-            },
-          }
+        : scriptWriterShortProviderContext(project, boundedProfile, command.inputArtifactVersionId)
       : project;
-    const providerInstructions = renderPrompt(prompt.templateText, providerInput);
     const providerOutputSchema = z.toJSONSchema(outputSchema[task]);
     // Bounded prompts already render the complete context into instructions. Sending it again as
     // input duplicates provider-bound content and consumes budget without adding information.
     const providerRequestInput = boundedStep || governedStage ? {} : providerInput;
+    const providerMaterial = providerBoundRequestMaterial(
+      prompt.templateText,
+      providerInput,
+      providerRequestInput,
+      providerOutputSchema,
+    );
     const inputCeiling = boundedStep
       ? boundedProfile.steps[task].inputTokenCeiling
       : governedStage
         ? governedTerminalStagePolicies[task].inputTokenCeiling
         : null;
-    if (
-      inputCeiling !== null &&
-      conservativeInputTokenUpperBound({
-        instructions: providerInstructions,
-        input: providerRequestInput,
-        outputSchema: providerOutputSchema,
-      }) > inputCeiling
-    )
+    if (inputCeiling !== null && providerMaterial.conservativeInputUnits > inputCeiling)
       throw new ProviderError(
         'PERMANENT',
         false,
@@ -447,9 +517,9 @@ export class EditorialExecutionService {
           taskType: task,
           modelKey: selected.modelKey,
           promptVersionId: prompt.id,
-          input: providerRequestInput,
-          instructions: providerInstructions,
-          outputSchema: providerOutputSchema,
+          input: providerMaterial.input,
+          instructions: providerMaterial.instructions,
+          outputSchema: providerMaterial.outputSchema,
           outputSchemaName: prompt.key,
           idempotencyKey,
           timeoutMs: stepPolicy.timeoutMs,

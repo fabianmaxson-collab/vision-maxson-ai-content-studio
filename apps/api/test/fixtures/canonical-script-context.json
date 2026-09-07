@@ -1,0 +1,42 @@
+{
+  "project": {
+    "id": "project_2135b883-8499-48e9-a4a7-bb04b970d72a",
+    "title": "Wie ein historischer Computerfehler die digitale Welt veränderte",
+    "description": "A short German educational documentary produced solely for the canonical Phase 3 STAGING E2E.",
+    "format": "SHORT",
+    "operatingMode": "ASSISTED",
+    "primaryLanguage": "de",
+    "brandName": "Phase 3 Canonical E2E STAGING 2026-09-06",
+    "niche": "Educational technology history",
+    "channelName": "Phase 3 Canonical E2E STAGING Channel",
+    "narrativeTone": "Clear, factual, concise documentary narration",
+    "editorialStrategyJson": "{\"purpose\":\"Phase 3 canonical terminal-graph validation\",\"reviewLanguage\":\"es\",\"productionEnvironment\":\"staging\"}",
+    "reviewLocale": "es",
+    "exactSource": null,
+    "lineage": [],
+    "approvedArtifacts": [
+      {
+        "artifactType": "CONTENT_BRIEF",
+        "versionId": "artifact_version_853b2f46-1d0f-4071-9566-bff028021f15",
+        "languageCode": "de",
+        "contentText": null,
+        "contentJson": "{\"topic\":\"Recherche vor Erzählung: Wie man die Behauptung prüft, ein historischer Computerfehler habe die digitale Welt verändert\",\"objective\":\"Eine kurze, deutschsprachige Bildungsdokumentation produzieren, die transparent erklärt, warum ein konkreter historischer Computerfehler erst identifiziert und quellenbasiert verifiziert werden muss, bevor seine Auswirkungen erzählt werden können.\",\"audience\":\"Deutschsprachige Zuschauer mit Interesse an Technikgeschichte, Lernende und Medienkompetenz-Interessierte\",\"primaryPlatformId\":\"YOUTUBE_SHORTS\",\"secondaryPlatformIds\":[\"INSTAGRAM_REELS\",\"TIKTOK\"],\"productionLanguage\":\"de\",\"reviewLanguage\":\"es\",\"format\":\"SHORT\",\"targetDurationSeconds\":60,\"narrativeAngle\":\"Meta-dokumentarisch und transparent: Nicht einen unbelegten Einzelfall dramatisieren, sondern zeigen, welche überprüfbaren Fragen eine verantwortungsvolle Technikgeschichte zuerst beantworten muss.\",\"hook\":\"„Ein Computerfehler soll die digitale Welt verändert haben – doch welcher, und was ist wirklich belegt?“\",\"tone\":\"Klar, sachlich, prägnant und dokumentarisch; neugierig, aber nicht spekulativ.\",\"cta\":\"„Welchen dokumentierten Computerfehler sollen wir als Nächstes mit Quellen prüfen?“\",\"visualDirection\":\"Vertikales 9:16-Format. Einstieg mit einer prägnanten Frage über Archivbildern von historischen Rechnern, Code und Fehlermeldungen. Danach eine visuelle Prüf-Checkliste mit den Stationen „Ereignis“, „Quelle“, „Ursache“, „Folgen“ und „Einordnung“. Jede offene Frage klar als offen markieren; keine Bilder, Jahreszahlen oder Fallbeispiele so einsetzen, dass sie einen konkreten unbelegten Vorfall suggerieren. Abschließend ein Quellen-/Recherche-Board mit dem Hinweis, dass die konkrete Geschichte erst nach Verifikation folgt.\",\"characterVersionIds\":[],\"voiceProfileId\":null,\"monetizationStrategy\":\"Keine direkte Monetarisierung im Beitrag. Aufbau von Vertrauen und wiederkehrendem Interesse durch eine quellensensible Technikgeschichtsreihe; spätere Inhalte können auf verifizierte Langform-Dokumentationen oder thematische Playlists verweisen.\",\"platformConstraints\":[\"Für YouTube Shorts, Instagram Reels und TikTok im vertikalen 9:16-Format produzieren.\",\"Kernaussage und Hook innerhalb der ersten 1–2 Sekunden platzieren.\",\"Deutsche, gut lesbare Untertitel einbrennen; Texteinblendungen kurz halten und im sicheren Bildbereich platzieren.\",\"Bei rund 60 Sekunden eine klare Struktur aus Hook, Prüfprozess und CTA einhalten.\",\"Keine externen Quellen oder historischen Bildmaterialien ohne geklärte Nutzungsrechte verwenden.\"],\"editorialConstraints\":[\"Produktionssprache bleibt Deutsch; die spanische Review-Lokalisierung betrifft ausschließlich Prüfung und Freigabe.\",\"Keinen konkreten historischen Fehler, keine Ursache, keine Zeitangabe und keine gesellschaftliche Folge als Tatsache behaupten, solange keine verifizierten Quellen vorliegen.\",\"Die Formulierung „veränderte die digitale Welt“ nur als zu prüfende Ausgangsbehauptung bzw. im Kontext des Recherchebedarfs verwenden, nicht als bestätigte Tatsache.\",\"Offene Wissenslücken sichtbar kennzeichnen und Spekulation vermeiden.\",\"Vor der Skripterstellung für eine spätere Fallstudie ein klar abgegrenztes Ereignis auswählen und zentrale Aussagen mit primären oder seriösen Sekundärquellen belegen.\",\"Keine erfundenen Zitate, Archivdokumente, Statistiken oder rekonstruierten Szenen verwenden.\"],\"researchVersionIds\":[\"artifact_version_c51cc5b0-5f45-4b91-bd2d-9cf7f2819549\"],\"userNotes\":\"Das Brief basiert auf der freigegebenen Idee „Der Fehler, der erst noch belegt werden muss“. Es ist für die kanonische Phase-3-STAGING-E2E-Produktion vorgesehen und priorisiert Transparenz über nicht vorhandene verifizierte Quellen gegenüber einer dramatisierten historischen Einzelfall-Erzählung.\"}"
+      },
+      {
+        "artifactType": "IDEA_CANDIDATE",
+        "versionId": "artifact_version_5c8aa711-bb26-447c-9ac2-541b16ca93ec",
+        "languageCode": "de",
+        "contentText": null,
+        "contentJson": "{\"title\":\"Der Fehler, der erst noch belegt werden muss\",\"angle\":\"Eine transparente Meta-Dokumentation: Statt einen unbestätigten historischen Vorfall zu dramatisieren, zeigt der Beitrag, welche Fragen vor einer faktenbasierten Technikgeschichte geklärt werden müssen.\",\"hook\":\"„Ein Computerfehler soll die digitale Welt verändert haben – doch welcher, und was ist wirklich belegt?“\",\"rationale\":\"Passt zum vorhandenen Forschungsstand, weil kein konkretes Ereignis und keine verifizierten Quellen vorliegen. Die Idee macht diese Lücke zum erzählerischen Ausgangspunkt, ohne historische Tatsachen zu erfinden.\",\"audience\":[\"Deutschsprachige Zuschauer mit Interesse an Technikgeschichte\",\"Lernende\",\"Medienkompetenz-Interessierte\"],\"targetFormat\":\"SHORT\",\"risks\":[\"Darf keine konkreten Fehlerfälle, Folgen oder Zeitangaben als Tatsachen behaupten.\",\"Benötigt eine klare Kennzeichnung, dass es sich um den Recherchebedarf und nicht um die Geschichte eines verifizierten Einzelfalls handelt.\"],\"confidence\":0.96}"
+      },
+      {
+        "artifactType": "RESEARCH",
+        "versionId": "artifact_version_c51cc5b0-5f45-4b91-bd2d-9cf7f2819549",
+        "languageCode": "de",
+        "contentText": null,
+        "contentJson": "{\"summary\":\"Für das Projekt liegt kein verifiziertes Quellenmaterial vor. Daher können keine belastbaren historischen Aussagen über einen konkreten Computerfehler getroffen werden. Für eine kurze deutschsprachige Bildungsdokumentation sollte zunächst ein klar abgegrenztes Ereignis ausgewählt und mit primären oder seriösen Sekundärquellen belegt werden; mögliche Themenfelder wären etwa ein Datumsproblem, ein Software-Bug oder ein Fehler in einem technischen System.\",\"claims\":[{\"claim\":\"Das Projekt ist als kurze deutschsprachige Bildungsdokumentation zur Geschichte der Technologie beschrieben.\",\"evidenceClass\":\"UNKNOWN\",\"confidence\":null},{\"claim\":\"Die geplante Erzählweise soll klar, sachlich und prägnant dokumentarisch sein.\",\"evidenceClass\":\"UNKNOWN\",\"confidence\":null},{\"claim\":\"Ein konkreter historischer Computerfehler wird im vorliegenden Material nicht benannt.\",\"evidenceClass\":\"UNKNOWN\",\"confidence\":null},{\"claim\":\"Ohne verifizierte externe Quellen sind Aussagen zu Ursache, Verlauf, Folgen und gesellschaftlicher Bedeutung eines historischen Computerfehlers nicht belastbar belegbar.\",\"evidenceClass\":\"AI_INFERENCE\",\"confidence\":0.99},{\"claim\":\"Eine faktenbasierte Produktion benötigt vor der Skripterstellung mindestens eine überprüfbare Auswahl des Ereignisses sowie belastbare Belege für zentrale Tatsachenbehauptungen.\",\"evidenceClass\":\"AI_INFERENCE\",\"confidence\":0.98}]}"
+      }
+    ]
+  },
+  "promptTemplate": "Write the production script in the project production language for the approved short-form brief. Preserve facts and constraints; do not add unverifiable claims. Context: {{context_json}}"
+}

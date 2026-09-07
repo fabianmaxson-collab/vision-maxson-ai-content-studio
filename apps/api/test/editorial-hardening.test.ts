@@ -82,9 +82,9 @@ describe('editorial routing and budget hardening', () => {
     expect(budget).toContain('profile.version');
   });
   it('carries the selected profile languages into provider context', () => {
-    expect(execution).toContain('key: boundedProfile.key');
-    expect(execution).toContain('productionLanguage: boundedProfile.productionLanguage');
-    expect(execution).toContain('reviewLanguage: boundedProfile.reviewLanguage');
+    expect(execution).toContain('key: profile.key');
+    expect(execution).toContain('productionLanguage: profile.productionLanguage');
+    expect(execution).toContain('reviewLanguage: profile.reviewLanguage');
   });
   it('keeps review output tied to the exact source without mutating it', () => {
     expect(execution).toContain('sourceScriptVersionId !== inputVersionId');
@@ -101,8 +101,11 @@ describe('editorial routing and budget hardening', () => {
     expect(execution).toContain(
       'const providerRequestInput = boundedStep || governedStage ? {} : providerInput',
     );
-    expect(execution).toContain('input: providerRequestInput');
-    expect(execution).toContain('renderPrompt(prompt.templateText, providerInput)');
+    expect(execution).toContain('input: providerMaterial.input');
+    expect(execution).toContain('providerBoundRequestMaterial(');
+    expect(execution).toContain('scriptWriterShortProviderContext(');
+    expect(execution).toContain("a.status='approved'");
+    expect(execution).toContain('a.current_version_id=v.id');
     expect(execution.indexOf('Provider-bound input exceeds')).toBeLessThan(
       execution.indexOf('new OpenAIResponsesAdapter'),
     );
