@@ -6,6 +6,8 @@ import {
   reviewTranslationOutputSchema,
   scriptCritiqueSchema,
   storyboardOutputSchema,
+  storyboardOutputV1Schema,
+  storyboardOutputV2Schema,
   intelligenceTaskSchema,
 } from '@vision-maxson/contracts';
 import {
@@ -324,12 +326,28 @@ export class EditorialExecutionService {
       );
     const prompt = await this.db
       .prepare(
-        `SELECT pv.id,pv.template_text AS templateText,pd.key FROM prompt_versions pv JOIN prompt_definitions pd ON pd.id=pv.prompt_definition_id WHERE pd.key=? AND pd.status='active' AND pv.status='active' ORDER BY pv.version_number DESC LIMIT 1`,
+        `SELECT pv.id,pv.template_text AS templateText,pv.input_schema_version AS inputSchemaVersion,pv.output_schema_version AS outputSchemaVersion,pd.key FROM prompt_versions pv JOIN prompt_definitions pd ON pd.id=pv.prompt_definition_id WHERE pd.key=? AND pd.status='active' AND pv.status='active' ORDER BY pv.version_number DESC LIMIT 1`,
       )
       .bind(promptKey[task])
-      .first<{ id: string; templateText: string; key: string }>();
+      .first<{
+        id: string;
+        templateText: string;
+        inputSchemaVersion: string;
+        outputSchemaVersion: string;
+        key: string;
+      }>();
     if (!prompt)
       throw new ProviderError('PERMANENT', false, 'Active prompt version is unavailable.');
+    const selectedOutputSchema =
+      task !== 'STORYBOARD_PLANNER'
+        ? outputSchema[task]
+        : prompt.outputSchemaVersion === 'storyboard-output-v2'
+          ? storyboardOutputV2Schema
+          : prompt.outputSchemaVersion === 'storyboard-output-v1'
+            ? storyboardOutputV1Schema
+            : null;
+    if (!selectedOutputSchema)
+      throw new ProviderError('PERMANENT', false, 'Unsupported Storyboard output schema version.');
     const modelRows = await this.db
       .prepare(
         `SELECT p.id AS providerId,p.key AS providerKey,m.id AS modelId,m.model_key AS modelKey,m.capabilities_json AS capabilitiesJson,m.status,ps.id AS pricingSnapshotId,ps.input_unit_price AS inputPrice,ps.output_unit_price AS outputPrice,ps.currency,ps.unit_name AS unitName,ps.verification_status AS verificationStatus,ps.effective_from AS effectiveFrom,ps.effective_to AS effectiveTo FROM ai_providers p JOIN ai_provider_models m ON m.provider_id=p.id LEFT JOIN ai_pricing_snapshots ps ON ps.provider_model_id=m.id AND ps.effective_to IS NULL WHERE p.status='configured' AND m.status='available'`,
@@ -394,7 +412,7 @@ export class EditorialExecutionService {
         ? reviewTranslationProviderContext(project, boundedProfile)
         : scriptWriterShortProviderContext(project, boundedProfile, command.inputArtifactVersionId)
       : project;
-    const providerOutputSchema = z.toJSONSchema(outputSchema[task]);
+    const providerOutputSchema = z.toJSONSchema(selectedOutputSchema);
     // Bounded prompts already render the complete context into instructions. Sending it again as
     // input duplicates provider-bound content and consumes budget without adding information.
     const providerRequestInput = boundedStep || governedStage ? {} : providerInput;
@@ -527,7 +545,7 @@ export class EditorialExecutionService {
           reasoningEffort: stepPolicy.reasoningEffort,
         },
       });
-      const parsed = outputSchema[task].safeParse(result.output);
+      const parsed = selectedOutputSchema.safeParse(result.output);
       if (!parsed.success)
         throw new ProviderError('SCHEMA_VALIDATION', false, 'Provider output failed validation.');
       const costs = this.cost(result, selectedRow);
@@ -545,6 +563,7 @@ export class EditorialExecutionService {
         runId,
         command.inputArtifactVersionId,
         project.primaryLanguage,
+        prompt.outputSchemaVersion,
         ((project.lineage as LineageEdge[] | undefined) ?? []).length
           ? (project.lineage as LineageEdge[])
           : command.inputArtifactVersionId
@@ -670,6 +689,7 @@ export class EditorialExecutionService {
       .bind(projectId, this.actor.workspaceId)
       .all<Row>();
     const lineage: LineageEdge[] = [];
+    let storyboardSourceSegments: Row[] = [];
     const exactCurrentApproved = async (versionId: string | null, artifactType: string) => {
       if (!versionId)
         throw new ProviderError(
@@ -744,6 +764,20 @@ export class EditorialExecutionService {
     }
     if (task === 'STORYBOARD_PLANNER') {
       const script = await exactCurrentApproved(inputVersionId, 'PRODUCTION_SCRIPT');
+      storyboardSourceSegments = (
+        await this.db
+          .prepare(
+            'SELECT id,segment_order AS "order",content_text AS text FROM script_segments WHERE workspace_id=? AND script_version_id=? ORDER BY segment_order',
+          )
+          .bind(this.actor.workspaceId, script.versionId)
+          .all<Row>()
+      ).results;
+      if (storyboardSourceSegments.length === 0)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Storyboard requires persisted source segments.',
+        );
       const critique = await this.db
         .prepare(
           `SELECT cv.id versionId FROM artifact_dependencies d JOIN editorial_artifact_versions cv ON cv.id=d.dependent_artifact_version_id JOIN editorial_artifacts ca ON ca.id=cv.artifact_id AND ca.current_version_id=cv.id WHERE d.source_artifact_version_id=? AND d.dependency_type='EVALUATES_SOURCE' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL AND ca.workspace_id=? AND ca.project_id=? AND ca.artifact_type='SCRIPT_CRITIQUE' AND ca.status='approved' AND ca.deleted_at IS NULL`,
@@ -794,6 +828,7 @@ export class EditorialExecutionService {
       ...project,
       reviewLocale: 'es',
       exactSource,
+      storyboardSourceSegments,
       lineage,
       approvedArtifacts: artifacts.results.map((item) => ({
         ...item,
@@ -804,6 +839,7 @@ export class EditorialExecutionService {
       operatingMode: string;
       primaryLanguage: string;
       reviewLocale: string;
+      storyboardSourceSegments: Row[];
       approvedArtifacts: Row[];
     };
   }
@@ -953,6 +989,7 @@ export class EditorialExecutionService {
     runId: string,
     inputVersionId: string | null,
     language: string,
+    outputSchemaVersion: string,
     lineage: LineageEdge[],
     output: unknown,
     completion: {
@@ -1195,33 +1232,100 @@ export class EditorialExecutionService {
                 at,
               ),
           );
-      if (task === 'STORYBOARD_PLANNER')
-        for (const scene of (output as { scenes: Row[] }).scenes)
-          statements.push(
-            this.db
-              .prepare(
-                `INSERT INTO storyboard_scenes(id,workspace_id,storyboard_version_id,scene_order,target_duration_seconds,visual_description,location,action,camera_framing,mood,continuity_notes,generation_instructions,recommended_media_type,asset_requirements_json,transition_notes,character_version_refs_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-              )
-              .bind(
-                newId('scene'),
-                this.actor.workspaceId,
-                outputVersionId,
-                scene.order,
-                scene.targetDurationSeconds,
-                scene.visualDescription,
-                scene.location,
-                scene.action,
-                scene.cameraFraming,
-                scene.mood,
-                scene.continuityNotes,
-                scene.generationInstructions,
-                scene.recommendedMediaType,
-                JSON.stringify(scene.assetRequirements),
-                scene.transitionNotes,
-                JSON.stringify(scene.characterVersionIds),
-                at,
+      if (task === 'STORYBOARD_PLANNER') {
+        const scenes = (output as { scenes: Row[] }).scenes;
+        const v2 = outputSchemaVersion === 'storyboard-output-v2';
+        for (const scene of scenes) {
+          const sceneId = newId('scene');
+          if (v2) {
+            const segmentIds = scene.scriptSegmentIds as string[];
+            const placeholders = segmentIds.map(() => '?').join(',');
+            const valid = (
+              await this.db
+                .prepare(
+                  `SELECT id FROM script_segments WHERE workspace_id=? AND script_version_id=? AND id IN (${placeholders})`,
+                )
+                .bind(this.actor.workspaceId, inputVersionId, ...segmentIds)
+                .all<{ id: string }>()
+            ).results;
+            if (valid.length !== segmentIds.length)
+              throw new ProviderError(
+                'SCHEMA_VALIDATION',
+                false,
+                'Storyboard segment linkage is invalid.',
+              );
+            statements.push(
+              this.db
+                .prepare(
+                  `INSERT INTO storyboard_scenes(id,workspace_id,storyboard_version_id,scene_order,target_duration_seconds,visual_description,location,action,camera_framing,mood,continuity_notes,generation_instructions,recommended_media_type,asset_requirements_json,transition_notes,character_version_refs_json,created_at,camera_movement,aspect_ratio,safe_area_guidance_json,on_screen_text_json,captions_json,factual_claims_json,media_references_json,audio_guidance_json,continuity_key,continuity_reference_keys_json,contract_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                )
+                .bind(
+                  sceneId,
+                  this.actor.workspaceId,
+                  outputVersionId,
+                  scene.order,
+                  scene.targetDurationSeconds,
+                  scene.visualDescription,
+                  scene.location,
+                  scene.action,
+                  scene.cameraFraming,
+                  scene.mood,
+                  scene.continuityNotes,
+                  scene.generationInstructions,
+                  scene.recommendedMediaType,
+                  JSON.stringify(scene.assetRequirements),
+                  scene.transitionNotes,
+                  JSON.stringify(scene.characterVersionIds),
+                  at,
+                  scene.cameraMovement,
+                  scene.aspectRatio,
+                  JSON.stringify(scene.safeAreaGuidance),
+                  JSON.stringify(scene.onScreenText),
+                  JSON.stringify(scene.captions),
+                  JSON.stringify(scene.factualClaims),
+                  JSON.stringify(scene.mediaReferences),
+                  JSON.stringify(scene.audioGuidance),
+                  scene.continuityKey,
+                  JSON.stringify(scene.continuityReferenceKeys),
+                  'storyboard-output-v2',
+                ),
+              ...segmentIds.map((segmentId, index) =>
+                this.db
+                  .prepare(
+                    `INSERT INTO scene_script_segments(workspace_id,storyboard_scene_id,script_segment_id,segment_order,created_at) VALUES(?,?,?,?,?)`,
+                  )
+                  .bind(this.actor.workspaceId, sceneId, segmentId, index + 1, at),
               ),
-          );
+            );
+          } else {
+            statements.push(
+              this.db
+                .prepare(
+                  `INSERT INTO storyboard_scenes(id,workspace_id,storyboard_version_id,scene_order,target_duration_seconds,visual_description,location,action,camera_framing,mood,continuity_notes,generation_instructions,recommended_media_type,asset_requirements_json,transition_notes,character_version_refs_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                )
+                .bind(
+                  sceneId,
+                  this.actor.workspaceId,
+                  outputVersionId,
+                  scene.order,
+                  scene.targetDurationSeconds,
+                  scene.visualDescription,
+                  scene.location,
+                  scene.action,
+                  scene.cameraFraming,
+                  scene.mood,
+                  scene.continuityNotes,
+                  scene.generationInstructions,
+                  scene.recommendedMediaType,
+                  JSON.stringify(scene.assetRequirements),
+                  scene.transitionNotes,
+                  JSON.stringify(scene.characterVersionIds),
+                  at,
+                ),
+            );
+          }
+        }
+      }
       if (task === 'PREFLIGHT_ANALYSIS') {
         const assessmentId = newId('preflight');
         const value = output as {

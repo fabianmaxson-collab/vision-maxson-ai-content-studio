@@ -189,6 +189,14 @@ describe('deterministic Preflight wiring', () => {
     expect(preflight).toContain('deriveGenerationReadiness(g)');
     expect(repository).toContain("generation_readiness='NOT_READY'");
   });
+  it('validates V2 normalized scenes and segment ownership while preserving V1', () => {
+    expect(preflight).toContain("outputSchemaVersion === 'storyboard-output-v2'");
+    expect(preflight).toContain('storyboardOutputV2Schema.safeParse');
+    expect(preflight).toContain('storyboard_v2_scene_count_mismatch');
+    expect(preflight).toContain('storyboard_v2_segment_linkage_invalid');
+    expect(preflight).toContain('storyboard_v2_normalization_mismatch');
+    expect(preflight).toContain("outputSchemaVersion !== 'storyboard-output-v1'");
+  });
   it('fails provider-backed preflight before execution setup', () => {
     const guard = execution.indexOf("task === 'PREFLIGHT_ANALYSIS'");
     expect(guard).toBeGreaterThan(0);

@@ -1,3 +1,4 @@
+import { storyboardOutputV2Schema } from '@vision-maxson/contracts';
 import {
   deriveGenerationReadiness,
   evaluateTerminalGraph,
@@ -133,6 +134,72 @@ export class DeterministicPreflightService {
     const ideas = pick('IDEA_CANDIDATE').map(snap),
       chosen = ideas.filter((x) => x.selected);
     if (chosen.length !== 1) throw new Error('terminal_graph_selected_idea_invalid');
+    const storyboardRow = pick('STORYBOARD')[0]!;
+    const storyboardContract = await this.db
+      .prepare(
+        `SELECT pv.output_schema_version outputSchemaVersion FROM editorial_artifact_versions v JOIN intelligence_runs r ON r.id=v.intelligence_run_id JOIN prompt_versions pv ON pv.id=r.prompt_version_id WHERE v.id=? AND v.workspace_id=?`,
+      )
+      .bind(storyboardRow.versionId, this.actor.workspaceId)
+      .first<Row>();
+    if (storyboardContract?.outputSchemaVersion === 'storyboard-output-v2') {
+      let rawContent: unknown;
+      try {
+        rawContent = JSON.parse(String(storyboardRow.contentJson)) as unknown;
+      } catch {
+        throw new Error('storyboard_v2_content_invalid');
+      }
+      const parsedResult = storyboardOutputV2Schema.safeParse(rawContent);
+      if (!parsedResult.success) throw new Error('storyboard_v2_content_invalid');
+      const parsed = parsedResult.data;
+      const normalized = (
+        await this.db
+          .prepare(
+            `SELECT * FROM storyboard_scenes WHERE workspace_id=? AND storyboard_version_id=? ORDER BY scene_order`,
+          )
+          .bind(this.actor.workspaceId, storyboardRow.versionId)
+          .all<Row>()
+      ).results;
+      if (normalized.length !== parsed.scenes.length)
+        throw new Error('storyboard_v2_scene_count_mismatch');
+      for (const [index, scene] of parsed.scenes.entries()) {
+        const row = normalized[index]!;
+        const links = (
+          await this.db
+            .prepare(
+              `SELECT sss.script_segment_id segmentId FROM scene_script_segments sss JOIN script_segments ss ON ss.id=sss.script_segment_id WHERE sss.workspace_id=? AND sss.storyboard_scene_id=? AND ss.script_version_id=? ORDER BY sss.segment_order`,
+            )
+            .bind(this.actor.workspaceId, row.id, pick('PRODUCTION_SCRIPT')[0]!.versionId)
+            .all<Row>()
+        ).results.map((x) => String(x.segmentId));
+        if (JSON.stringify(links) !== JSON.stringify(scene.scriptSegmentIds))
+          throw new Error('storyboard_v2_segment_linkage_invalid');
+        const expected: Record<string, unknown> = {
+          camera_movement: scene.cameraMovement,
+          aspect_ratio: scene.aspectRatio,
+          safe_area_guidance_json: scene.safeAreaGuidance,
+          on_screen_text_json: scene.onScreenText,
+          captions_json: scene.captions,
+          factual_claims_json: scene.factualClaims,
+          media_references_json: scene.mediaReferences,
+          audio_guidance_json: scene.audioGuidance,
+          continuity_key: scene.continuityKey,
+          continuity_reference_keys_json: scene.continuityReferenceKeys,
+          contract_version: 'storyboard-output-v2',
+        };
+        for (const [key, value] of Object.entries(expected)) {
+          const actual: unknown = key.endsWith('_json')
+            ? (JSON.parse(String(row[key])) as unknown)
+            : row[key];
+          if (JSON.stringify(actual) !== JSON.stringify(value))
+            throw new Error('storyboard_v2_normalization_mismatch');
+        }
+      }
+    } else if (
+      storyboardContract?.outputSchemaVersion &&
+      storyboardContract.outputSchemaVersion !== 'storyboard-output-v1'
+    )
+      throw new Error('storyboard_schema_version_unsupported');
+
     const ids = [
       String(pick('RESEARCH')[0]!.versionId),
       chosen[0]!.versionId,

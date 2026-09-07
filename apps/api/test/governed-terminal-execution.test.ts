@@ -116,6 +116,14 @@ describe('governed terminal execution', () => {
     expect(adapter).toContain('{ timeout: request.timeoutMs, maxRetries: 0 }');
   });
 
+  it('selects Storyboard V2 by prompt metadata and persists exact segment linkage', () => {
+    expect(execution).toContain("prompt.outputSchemaVersion === 'storyboard-output-v2'");
+    expect(execution).toContain('storyboardOutputV2Schema');
+    expect(execution).toContain('storyboardSourceSegments');
+    expect(execution).toContain('Storyboard requires persisted source segments.');
+    expect(execution).toContain('INSERT INTO scene_script_segments');
+    expect(execution).toContain("'storyboard-output-v2'");
+  });
   it('retains idempotent replay, terminal reconciliation, invalidation, and no provider Preflight', () => {
     expect(execution).toContain('Idempotency key is already bound to a different command.');
     expect(execution).toContain('idempotentReplay: true');

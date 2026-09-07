@@ -90,7 +90,7 @@ export const scriptCritiqueSchema = z.object({
   issues: z.array(critiqueIssue).max(100),
   dimensionsEvaluated: z.array(z.string().max(100)).max(50),
 });
-export const storyboardSceneSchema = z.object({
+export const storyboardSceneV1Schema = z.object({
   order: z.number().int().positive(),
   targetDurationSeconds: z.number().positive().nullable(),
   scriptSegmentIds: z.array(id).max(100),
@@ -106,6 +106,140 @@ export const storyboardSceneSchema = z.object({
   transitionNotes: z.string().max(4000),
   characterVersionIds: z.array(id).max(50),
 });
+export const storyboardOutputV1Schema = z
+  .object({ scenes: z.array(storyboardSceneV1Schema).min(1).max(500) })
+  .strict();
+const aspectRatio = z.enum(['9:16', '16:9', '1:1', '4:5']);
+const rightsStatus = z.enum(['UNKNOWN', 'REQUIRES_VERIFICATION']);
+const onScreenText = z
+  .object({
+    text: z.string().min(1).max(500),
+    languageCode: languageCodeSchema,
+    placement: z.enum(['TOP', 'CENTER', 'BOTTOM', 'CUSTOM']),
+    startOffsetSeconds: z.number().min(0).nullable(),
+    endOffsetSeconds: z.number().min(0).nullable(),
+    purpose: z.enum(['TITLE', 'LABEL', 'QUOTE', 'CALLOUT', 'OTHER']),
+  })
+  .strict()
+  .superRefine((v, c) => {
+    if (
+      v.startOffsetSeconds !== null &&
+      v.endOffsetSeconds !== null &&
+      v.startOffsetSeconds > v.endOffsetSeconds
+    )
+      c.addIssue({ code: 'custom', message: 'On-screen text timing is inverted' });
+  });
+const factualClaim = z
+  .object({
+    claimText: z.string().min(1).max(1000),
+    status: z.enum(['SUPPORTED_BY_APPROVED_RESEARCH', 'OPEN', 'UNCERTAIN']),
+    researchClaimIds: z.array(id).max(20),
+    visualTreatment: z.string().max(1000),
+  })
+  .strict()
+  .superRefine((v, c) => {
+    if (v.status === 'SUPPORTED_BY_APPROVED_RESEARCH' && !v.researchClaimIds.length)
+      c.addIssue({ code: 'custom', message: 'Supported claims require approved Research IDs' });
+    if (v.status !== 'SUPPORTED_BY_APPROVED_RESEARCH' && v.researchClaimIds.length)
+      c.addIssue({ code: 'custom', message: 'Open claims cannot imply verified evidence' });
+  });
+export const storyboardSceneV2Schema = z
+  .object({
+    order: z.number().int().positive(),
+    targetDurationSeconds: z.number().positive().nullable(),
+    scriptSegmentIds: z.array(id).min(1).max(20),
+    narrationMode: z.literal('AUTHORITATIVE_SCRIPT_SEGMENTS'),
+    visualDescription: z.string().min(1).max(1200),
+    location: z.string().max(300),
+    action: z.string().max(800),
+    cameraFraming: z.string().max(300),
+    cameraMovement: z.string().max(300),
+    mood: z.string().max(300),
+    continuityKey: z.string().min(1).max(100).nullable(),
+    continuityReferenceKeys: z.array(z.string().min(1).max(100)).max(20),
+    continuityNotes: z.string().max(800),
+    transitionNotes: z.string().max(500),
+    aspectRatio,
+    safeAreaGuidance: z
+      .object({
+        protectTop: z.boolean(),
+        protectBottom: z.boolean(),
+        protectSides: z.boolean(),
+        notes: z.string().max(500),
+      })
+      .strict(),
+    onScreenText: z.array(onScreenText).max(10),
+    captions: z
+      .object({
+        mode: z.enum(['REQUIRED', 'OPTIONAL', 'NONE']),
+        languageCode: languageCodeSchema,
+        sourceScriptSegmentIds: z.array(id).max(20),
+        styleGuidance: z.string().max(500),
+        safeAreaNotes: z.string().max(500),
+      })
+      .strict(),
+    factualClaims: z.array(factualClaim).max(20),
+    recommendedMediaType: z.enum(['IMAGE', 'VIDEO', 'MIXED', 'UNKNOWN']),
+    assetRequirements: z.array(z.string().max(500)).max(20),
+    mediaReferences: z
+      .array(
+        z
+          .object({
+            requirement: z.string().min(1).max(1000),
+            kind: z.enum(['ARCHIVE', 'REFERENCE', 'STOCK', 'GENERATED']),
+            sourceReferenceIds: z.array(id).max(20),
+            rightsStatus,
+            notes: z.string().max(500),
+          })
+          .strict(),
+      )
+      .max(20),
+    generationInstructions: z.string().max(1600),
+    characterVersionIds: z.array(id).max(50),
+    audioGuidance: z
+      .object({
+        ambience: z.string().max(500),
+        soundEffects: z.array(z.string().max(300)).max(20),
+        music: z
+          .object({
+            use: z.enum(['NONE', 'OPTIONAL', 'REQUIRED']),
+            guidance: z.string().max(500),
+            rightsStatus,
+          })
+          .strict(),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((v, c) => {
+    if (new Set(v.scriptSegmentIds).size !== v.scriptSegmentIds.length)
+      c.addIssue({ code: 'custom', message: 'Scene script links must be unique' });
+    if (v.captions.sourceScriptSegmentIds.some((x) => !v.scriptSegmentIds.includes(x)))
+      c.addIssue({ code: 'custom', message: 'Caption links must belong to the scene' });
+  });
+export const storyboardOutputV2Schema = z
+  .object({
+    contractVersion: z.literal('storyboard-output-v2'),
+    projectFormat: z.enum(['SHORT', 'LONG_FORM']),
+    aspectRatio,
+    scenes: z.array(storyboardSceneV2Schema).min(1).max(24),
+  })
+  .strict()
+  .superRefine((v, c) => {
+    if (v.projectFormat === 'SHORT' && v.aspectRatio !== '9:16')
+      c.addIssue({ code: 'custom', message: 'SHORT Storyboards require 9:16' });
+    if (v.projectFormat === 'SHORT' && v.scenes.some((s) => s.aspectRatio !== '9:16'))
+      c.addIssue({ code: 'custom', message: 'SHORT scenes require 9:16' });
+    if (v.scenes.some((s, i) => s.order !== i + 1))
+      c.addIssue({ code: 'custom', message: 'Scene order must be contiguous' });
+    const keys = v.scenes.map((s) => s.continuityKey).filter((x): x is string => x !== null);
+    if (new Set(keys).size !== keys.length)
+      c.addIssue({ code: 'custom', message: 'Continuity keys must be unique' });
+    const known = new Set(keys);
+    if (v.scenes.some((s) => s.continuityReferenceKeys.some((k) => !known.has(k))))
+      c.addIssue({ code: 'custom', message: 'Continuity references must resolve' });
+  });
+export const storyboardSceneSchema = storyboardSceneV1Schema;
 export const preflightCheckSchema = z.object({
   key: z.string().min(1).max(100),
   result: z.enum(['PASS', 'WARNING', 'BLOCKED', 'UNKNOWN']),
@@ -180,9 +314,7 @@ export const reviewTranslationOutputSchema = z
     faithfulTranslation: z.string().min(1).max(262144),
   })
   .strict();
-export const storyboardOutputSchema = z
-  .object({ scenes: z.array(storyboardSceneSchema).min(1).max(500) })
-  .strict();
+export const storyboardOutputSchema = storyboardOutputV1Schema;
 export const preflightAnalysisOutputSchema = z
   .object({
     checks: z.array(preflightCheckSchema).min(1).max(100),
