@@ -82,7 +82,7 @@ describe('governed terminal execution', () => {
   it('fails closed through exact upstream validation before run, reservation, or adapter', () => {
     const validation = execution.indexOf('const project = await this.projectContext');
     const modelRouting = execution.indexOf('const selected = routeModel');
-    const envelope = execution.indexOf('? await loadGovernedTerminalEnvelope');
+    const envelope = execution.indexOf('loadGovernedRemediationEnvelope(');
     const run = execution.indexOf('const insertRun');
     const adapterConstruction = execution.indexOf('new OpenAIResponsesAdapter');
     expect(validation).toBeGreaterThan(0);

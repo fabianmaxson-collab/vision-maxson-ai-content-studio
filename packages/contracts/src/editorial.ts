@@ -328,6 +328,7 @@ export const intelligenceCommandSchema = z
     preferredModelKey: z.string().min(1).max(200).optional(),
     inputArtifactVersionId: id.nullable().default(null),
     creativeRegeneration: z.boolean().default(false),
+    remediationId: id.optional(),
   })
   .strict()
   .superRefine((value, context) => {

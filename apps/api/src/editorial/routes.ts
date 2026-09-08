@@ -361,6 +361,7 @@ for (const [route, task] of taskRoutes)
           mode: parsed.data.mode,
           inputArtifactVersionId,
           creativeRegeneration: parsed.data.creativeRegeneration,
+          ...(parsed.data.remediationId ? { remediationId: parsed.data.remediationId } : {}),
           ...(parsed.data.preferredProviderKey
             ? { preferredProviderKey: parsed.data.preferredProviderKey }
             : {}),

@@ -197,3 +197,77 @@ export async function loadGovernedTerminalEnvelope(
     throw new ProviderError('UNAVAILABLE', false, 'An active governed stage envelope is required.');
   return envelope;
 }
+
+export async function loadGovernedRemediationEnvelope(
+  db: D1Database,
+  actor: EditorialActor,
+  projectId: string,
+  stage: GovernedTerminalStage,
+  selected: { providerKey: string; modelKey: string },
+  remediationId: string,
+) {
+  const envelope = await db
+    .prepare(
+      `SELECT e.id,e.project_execution_budget_id projectExecutionBudgetId,e.monetary_ceiling_microusd monetaryCeilingMicrousd,e.maximum_calls maximumCalls,e.status
+       FROM editorial_execution_remediations r
+       JOIN editorial_project_execution_budgets b ON b.id=r.remediation_project_execution_budget_id
+       JOIN editorial_execution_envelopes e ON e.id=r.remediation_envelope_id
+       JOIN ai_providers p ON p.id=r.provider_id
+       JOIN ai_provider_models m ON m.id=r.provider_model_id AND m.provider_id=p.id
+       JOIN audit_events a ON a.id=r.audit_event_id
+       JOIN editorial_project_execution_budgets ob ON ob.id=r.original_project_execution_budget_id
+       JOIN editorial_execution_reservations hr ON hr.id=r.historical_reservation_id
+       JOIN intelligence_runs hir ON hir.id=r.historical_run_id
+       JOIN audit_events hta ON hta.id=hir.terminal_audit_event_id
+       JOIN editorial_execution_envelopes he ON he.id=r.historical_envelope_id
+       WHERE r.id=? AND r.workspace_id=? AND r.project_id=? AND r.stage_key=?
+         AND r.profile_key='phase3_storyboard_remediation_v1' AND r.profile_version=1
+         AND r.reason_category='PROVIDER_OUTPUT_SCHEMA_VALIDATION_AMBIGUOUS'
+         AND r.maximum_calls=1 AND r.maximum_attempts=1 AND r.sdk_max_retries=0
+         AND r.fallback_enabled=0 AND r.creative_regeneration_enabled=0
+         AND r.external_research_enabled=0 AND r.human_approval_required=1
+         AND b.workspace_id=r.workspace_id AND b.project_id=r.project_id
+         AND b.profile_key=r.profile_key AND b.profile_version=r.profile_version
+         AND b.status='ACTIVE' AND b.currency='USD'
+         AND b.monetary_ceiling_microusd=r.additional_exposure_microusd
+         AND e.workspace_id=r.workspace_id AND e.project_id=r.project_id
+         AND e.project_execution_budget_id=b.id AND e.profile_key=r.profile_key
+         AND e.profile_version=r.profile_version AND e.stage_key=r.stage_key
+         AND e.provider_id=r.provider_id AND e.provider_model_id=r.provider_model_id
+         AND e.status='ACTIVE' AND e.maximum_calls=1 AND e.currency='USD'
+         AND e.monetary_ceiling_microusd=r.additional_exposure_microusd
+         AND (SELECT COUNT(*) FROM editorial_execution_reservations er WHERE er.envelope_id=e.id)<e.maximum_calls
+         AND p.key=? AND p.status='configured' AND m.model_key=? AND m.status='available'
+         AND a.workspace_id=r.workspace_id
+         AND a.action='editorial.remediation_capacity_authorized'
+         AND a.resource_type='editorial_execution_remediation' AND a.resource_id=r.id
+         AND a.outcome='success'
+         AND ob.workspace_id=r.workspace_id AND ob.project_id=r.project_id
+         AND ob.status='ACTIVE' AND ob.version=r.expected_original_budget_version
+         AND hr.workspace_id=r.workspace_id AND hr.project_id=r.project_id
+         AND hr.project_execution_budget_id=ob.id AND hr.intelligence_run_id=hir.id
+         AND hr.envelope_id=he.id AND hr.status='AMBIGUOUS' AND hr.actual_microusd IS NULL
+         AND hr.dispatched_at IS NOT NULL
+         AND hir.workspace_id=r.workspace_id AND hir.project_id=r.project_id
+         AND hir.task_type='STORYBOARD_PLANNER' AND hir.status='FAILED_PERMANENT'
+         AND hir.error_category='SCHEMA_VALIDATION'
+         AND hta.workspace_id=r.workspace_id AND hta.resource_type='intelligence_run'
+         AND hta.resource_id=hir.id AND hta.action='intelligence.run_failed' AND hta.outcome='failure'
+         AND he.workspace_id=r.workspace_id AND he.project_id=r.project_id
+         AND he.project_execution_budget_id=ob.id AND he.stage_key='STORYBOARD_PLANNER'
+         AND he.status='CONSUMED' AND he.maximum_calls=1
+         AND (SELECT COUNT(*) FROM editorial_execution_reservations her WHERE her.envelope_id=he.id)=1`,
+    )
+    .bind(
+      remediationId,
+      actor.workspaceId,
+      projectId,
+      stage,
+      selected.providerKey,
+      selected.modelKey,
+    )
+    .first<Row>();
+  if (!envelope)
+    throw new ProviderError('PERMANENT', false, 'Remediation execution binding is invalid.');
+  return envelope;
+}

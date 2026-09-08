@@ -31,7 +31,11 @@ import {
   type BoundedExecutionProfile,
 } from '@vision-maxson/providers/execution-profile';
 import { calculateReservation, loadBoundedEnvelope, reservationStatement } from './budget';
-import { calculateGovernedReservation, loadGovernedTerminalEnvelope } from './governed-budget';
+import {
+  calculateGovernedReservation,
+  loadGovernedRemediationEnvelope,
+  loadGovernedTerminalEnvelope,
+} from './governed-budget';
 import { z } from 'zod';
 import { invalidationFor, type ArtifactType } from '@vision-maxson/domain';
 import type { EditorialActor } from './repository';
@@ -52,6 +56,7 @@ type Command = {
   preferredModelKey?: string;
   inputArtifactVersionId: string | null;
   creativeRegeneration: boolean;
+  remediationId?: string;
 };
 type Row = Record<string, unknown>;
 type LineageEdge = {
@@ -363,6 +368,12 @@ export class EditorialExecutionService {
         false,
         'Terminal pipeline schema capability is unavailable.',
       );
+    if (command.remediationId && task !== 'STORYBOARD_PLANNER')
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'Remediation execution is only supported for Storyboard.',
+      );
     if (!this.config.openAIEnabled || !this.config.openAIApiKey)
       throw new ProviderNotConfiguredError();
     const project = await this.projectContext(projectId, task, command.inputArtifactVersionId);
@@ -484,7 +495,16 @@ export class EditorialExecutionService {
     const envelope = boundedStep
       ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected, boundedProfile)
       : governedStage
-        ? await loadGovernedTerminalEnvelope(this.db, this.actor, projectId, task, selected)
+        ? command.remediationId
+          ? await loadGovernedRemediationEnvelope(
+              this.db,
+              this.actor,
+              projectId,
+              task,
+              selected,
+              command.remediationId,
+            )
+          : await loadGovernedTerminalEnvelope(this.db, this.actor, projectId, task, selected)
         : null;
     const reservedMicrousd = boundedStep
       ? calculateReservation(selectedRow, task, boundedProfile)
