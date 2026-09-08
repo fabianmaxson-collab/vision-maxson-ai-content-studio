@@ -368,6 +368,26 @@ export const governedTerminalBudgetSchema = z
     )
       context.addIssue({ code: 'custom', message: 'Stage ceilings exceed project budget' });
   });
+export const governedRemediationCapacitySchema = z
+  .object({
+    workspaceId: id,
+    originalProjectExecutionBudgetId: id,
+    expectedOriginalBudgetVersion: z.number().int().positive(),
+    expectedOriginalBudgetStatus: z.literal('ACTIVE'),
+    historicalReservationId: id,
+    historicalRunId: id,
+    historicalEnvelopeId: id,
+    remediationStage: z.literal('STORYBOARD_PLANNER'),
+    providerKey: z.literal('openai'),
+    modelKey: z.literal('gpt-5.6-terra'),
+    remediationCeilingMicrousd: z.literal(321920),
+    maximumCalls: z.literal(1),
+    remediationProfileKey: z.literal('phase3_storyboard_remediation_v1'),
+    remediationProfileVersion: z.literal(1),
+    reasonCategory: z.literal('PROVIDER_OUTPUT_SCHEMA_VALIDATION_AMBIGUOUS'),
+  })
+  .strict();
+export type GovernedRemediationCapacityCommand = z.infer<typeof governedRemediationCapacitySchema>;
 export const terminalDependencyTypeSchema = z.enum([
   'GENERATED_FROM',
   'USES_RESEARCH',

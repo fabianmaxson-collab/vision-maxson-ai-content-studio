@@ -2,6 +2,7 @@ import {
   approvalSchema,
   createArtifactVersionSchema,
   governedTerminalBudgetSchema,
+  governedRemediationCapacitySchema,
   intelligenceCommandSchema,
   type intelligenceTaskSchema,
 } from '@vision-maxson/contracts';
@@ -18,6 +19,7 @@ import { EditorialExecutionService } from './execution';
 import { DeterministicPreflightService } from './preflight';
 import { authorizePhase3Envelope } from './budget';
 import { authorizeGovernedTerminalBudget } from './governed-budget';
+import { GovernedRemediationService } from './governed-remediation';
 import { EditorialRepository, type EditorialActor } from './repository';
 import type { z } from 'zod';
 
@@ -282,6 +284,42 @@ editorialRoutes.post(
         422,
         'Validation Failed',
         error instanceof Error ? error.message : 'governed_terminal_budget_authorization_failed',
+      );
+    }
+  },
+);
+editorialRoutes.post(
+  '/admin/projects/:projectId/editorial-remediation-capacities',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const parsed = governedRemediationCapacitySchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    const key = c.req.header('Idempotency-Key');
+    if (!parsed.success || !key || key.length > 200)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid remediation command and Idempotency-Key are required.',
+      );
+    try {
+      const identity = c.get('identity');
+      const result = await new GovernedRemediationService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).authorize(c.req.param('projectId'), key, parsed.data);
+      return c.json(result, result.idempotent ? 200 : 201);
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : 'remediation_capacity_authorization_failed';
+      return problem(
+        c,
+        detail.includes('conflict') || detail.includes('already_exists') ? 409 : 422,
+        'Validation Failed',
+        detail,
       );
     }
   },
