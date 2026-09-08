@@ -38,11 +38,15 @@ class Statement {
   }
 }
 class AtomicD1 {
-  constructor(private db: DatabaseSync) {}
+  constructor(
+    private db: DatabaseSync,
+    private sabotageRemediationAudit = false,
+  ) {}
   prepare(sql: string) {
     return new Statement(this.db, sql);
   }
   async batch(statements: Statement[]) {
+    if (this.sabotageRemediationAudit) statements.at(-1)!.values[16] = 'terminal_audit';
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const results = [];
@@ -158,6 +162,7 @@ describe('governed remediation capacity', () => {
       '0005_deterministic_preflight_provenance.sql',
       '0006_storyboard_v2_contract_hardening.sql',
       '0007_governed_remediation_capacity.sql',
+      '0008_remediation_evidence_expression_depth.sql',
     ])
       db.exec(migrationSql(name));
     db.exec(`
@@ -186,6 +191,29 @@ describe('governed remediation capacity', () => {
       'editorial_execution_envelopes',
       'editorial_project_execution_budgets',
     ].map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+    const sabotaged = new GovernedRemediationService(
+      new AtomicD1(db, true) as unknown as D1Database,
+      {
+        id: 'owner',
+        workspaceId: 'workspace_primary',
+        roles: ['owner'],
+      },
+      {
+        requestId: 'request-test',
+        environment: 'test',
+        accessIssuer: 'issuer',
+        accessSubject: 'subject',
+      },
+    );
+    await expect(sabotaged.authorize('project', 'sabotaged-key', valid)).rejects.toThrow(
+      'remediation_audit_invalid',
+    );
+    expect([
+      count(db, 'editorial_project_execution_budgets'),
+      count(db, 'editorial_execution_envelopes'),
+      count(db, 'editorial_execution_remediations'),
+      count(db, 'audit_events'),
+    ]).toEqual([1, 1, 0, 1]);
     const subject = new GovernedRemediationService(
       new AtomicD1(db) as unknown as D1Database,
       {
