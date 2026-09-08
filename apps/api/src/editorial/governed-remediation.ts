@@ -94,7 +94,7 @@ export class GovernedRemediationService {
       await this.db.batch([
         this.db
           .prepare(
-            `INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,?,'editorial.remediation_capacity_authorized','editorial_execution_remediation',?,'success',?,?,?,?,?)`,
+            `INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,'editorial.remediation_capacity_authorized','editorial_execution_remediation',?,'success',?,?,?,?,?)`,
           )
           .bind(
             auditEventId,
