@@ -44,7 +44,7 @@ describe('editorial routing and budget hardening', () => {
   it('writes failure attempt, ambiguous reservation, audit, and terminal run in one batch', () => {
     expect(execution).toContain("'intelligence.run_failed'");
     expect(execution).toContain("'failure'");
-    expect(execution).toContain("status='AMBIGUOUS',reconciled_at=?");
+    expect(execution).toContain('SET status=?,actual_microusd=?,reconciled_at=?');
     expect(execution).toContain('terminal_audit_event_id=?');
   });
   it('re-reads and compares the winning command hash', () => {
@@ -165,7 +165,7 @@ describe('editorial routing and budget hardening', () => {
   });
   it('marks dispatch and preserves ambiguous reservations', () => {
     expect(execution).toContain("status='DISPATCHED'");
-    expect(execution).toContain("status='AMBIGUOUS'");
+    expect(execution).toContain("reconciledKnownCost ? 'RECONCILED' : 'AMBIGUOUS'");
   });
   it('defines workspace/project isolation and one reservation per step', () => {
     expect(migration).toContain('workspace_id TEXT NOT NULL');

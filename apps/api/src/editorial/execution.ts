@@ -275,6 +275,54 @@ function safeError(error: unknown) {
     : new ProviderError('PERMANENT', false, 'AI execution failed.');
 }
 
+const VALIDATION_ISSUE_LIMIT = 8;
+const VALIDATION_PATH_DEPTH_LIMIT = 6;
+const VALIDATION_PATH_SEGMENT_LIMIT = 48;
+const stableCustomIssueCategories: Readonly<Record<string, string>> = Object.freeze({
+  'On-screen text timing is inverted': 'on_screen_text_timing_inverted',
+  'Supported claims require approved Research IDs': 'supported_claim_missing_research_ids',
+  'Open claims cannot imply verified evidence': 'open_claim_has_research_ids',
+  'Scene script links must be unique': 'duplicate_scene_script_segment',
+  'Caption links must belong to the scene': 'caption_segment_outside_scene',
+  'SHORT Storyboards require 9:16': 'short_storyboard_aspect_ratio',
+  'SHORT scenes require 9:16': 'short_scene_aspect_ratio',
+  'Scene order must be contiguous': 'scene_order_not_contiguous',
+  'Continuity keys must be unique': 'duplicate_continuity_key',
+  'Continuity references must resolve': 'unresolved_continuity_reference',
+});
+
+export function sanitizeValidationIssues(
+  issues: ReadonlyArray<{ code: string; path?: readonly PropertyKey[]; message?: string }>,
+  schemaVersion: string,
+) {
+  const captured = issues.slice(0, VALIDATION_ISSUE_LIMIT).map((issue) => ({
+    code: issue.code.slice(0, 64),
+    path: (issue.path ?? [])
+      .slice(0, VALIDATION_PATH_DEPTH_LIMIT)
+      .map((part) =>
+        typeof part === 'number'
+          ? part
+          : typeof part === 'string'
+            ? part.slice(0, VALIDATION_PATH_SEGMENT_LIMIT)
+            : 'unknown',
+      ),
+    pathTruncated: (issue.path?.length ?? 0) > VALIDATION_PATH_DEPTH_LIMIT,
+    category:
+      issue.code === 'custom' && issue.message
+        ? (stableCustomIssueCategories[issue.message] ?? 'custom_contract_rule')
+        : `schema_${issue.code.slice(0, 48)}`,
+    message: 'Value does not satisfy the active output contract.',
+  }));
+  return {
+    validationLayer: 'application_schema',
+    schemaVersion: schemaVersion.slice(0, 100),
+    totalIssueCount: issues.length,
+    capturedIssueCount: captured.length,
+    truncated: issues.length > captured.length,
+    issues: captured,
+  };
+}
+
 export class EditorialExecutionService {
   constructor(
     private readonly db: D1Database,
@@ -520,7 +568,49 @@ export class EditorialExecutionService {
       return { run: reserved, idempotentReplay: true };
     }
     const adapter = new OpenAIResponsesAdapter(this.config.openAIApiKey, this.config.openAIBaseUrl);
-    const observer = this.observer(runId);
+    let providerCompletion:
+      | {
+          result: ProviderExecutionResult;
+          costs: { actualCost: number | null; currency: string | null };
+          metadata: Row;
+          actualMicrousd: number | null;
+        }
+      | undefined;
+    let validationDiagnostic: ReturnType<typeof sanitizeValidationIssues> | undefined;
+    const observer = this.observer(runId, async (result) => {
+      const costs = this.cost(result, selectedRow);
+      const metadata = {
+        commandHash,
+        ...result.safeMetadata,
+        cachedInputUnits: result.usage.cachedInputUnits,
+        reasoningOutputUnits: result.usage.reasoningOutputUnits,
+      };
+      const actualMicrousd =
+        costs.actualCost === null ? null : Math.ceil(costs.actualCost * 1_000_000);
+      providerCompletion = { result, costs, metadata, actualMicrousd };
+      const completedAt = now();
+      await this.db.batch([
+        this.db
+          .prepare(
+            `UPDATE intelligence_run_attempts SET provider_request_id=?,safe_metadata_json=? WHERE intelligence_run_id=? AND status='RUNNING'`,
+          )
+          .bind(result.providerRequestId, JSON.stringify(metadata), runId),
+        this.db
+          .prepare(
+            `UPDATE intelligence_runs SET input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,updated_at=? WHERE id=? AND workspace_id=? AND status='RUNNING'`,
+          )
+          .bind(
+            result.usage.inputUnits,
+            result.usage.outputUnits,
+            costs.actualCost,
+            costs.currency,
+            JSON.stringify(metadata),
+            completedAt,
+            runId,
+            this.actor.workspaceId,
+          ),
+      ]);
+    });
     const started = Date.now();
     try {
       const result = await new AIExecutionGateway(new Map([['openai', adapter]])).execute<
@@ -546,8 +636,13 @@ export class EditorialExecutionService {
         },
       });
       const parsed = selectedOutputSchema.safeParse(result.output);
-      if (!parsed.success)
+      if (!parsed.success) {
+        validationDiagnostic = sanitizeValidationIssues(
+          parsed.error.issues,
+          prompt.outputSchemaVersion,
+        );
         throw new ProviderError('SCHEMA_VALIDATION', false, 'Provider output failed validation.');
+      }
       const costs = this.cost(result, selectedRow);
       const metadata = {
         commandHash,
@@ -598,20 +693,41 @@ export class EditorialExecutionService {
       const terminalAt = now();
       const auditId = newId('audit');
       const terminalStatus = mapped.retryable ? 'FAILED_RETRYABLE' : 'FAILED_PERMANENT';
+      const failureMetadata = {
+        ...(providerCompletion?.metadata ?? { commandHash }),
+        ...(validationDiagnostic ? { validationDiagnostic } : {}),
+      };
+      const knownActualMicrousd = providerCompletion?.actualMicrousd ?? null;
+      const reconciledKnownCost =
+        knownActualMicrousd !== null &&
+        reservedMicrousd !== null &&
+        knownActualMicrousd <= reservedMicrousd;
       const statements: D1PreparedStatement[] = [
         this.db
           .prepare(
-            `UPDATE intelligence_run_attempts SET status=?,error_category=?,safe_error_detail=?,completed_at=? WHERE intelligence_run_id=? AND status='RUNNING'`,
+            `UPDATE intelligence_run_attempts SET status=?,error_category=?,safe_error_detail=?,safe_metadata_json=?,completed_at=? WHERE intelligence_run_id=? AND status='RUNNING'`,
           )
-          .bind(terminalStatus, mapped.category, mapped.message, terminalAt, runId),
+          .bind(
+            terminalStatus,
+            mapped.category,
+            mapped.message,
+            JSON.stringify(failureMetadata),
+            terminalAt,
+            runId,
+          ),
       ];
       if (boundedStep || governedStage)
         statements.push(
           this.db
             .prepare(
-              `UPDATE editorial_execution_reservations SET status='AMBIGUOUS',reconciled_at=? WHERE intelligence_run_id=? AND status IN ('RESERVED','DISPATCHED')`,
+              `UPDATE editorial_execution_reservations SET status=?,actual_microusd=?,reconciled_at=? WHERE intelligence_run_id=? AND status IN ('RESERVED','DISPATCHED')`,
             )
-            .bind(terminalAt, runId),
+            .bind(
+              reconciledKnownCost ? 'RECONCILED' : 'AMBIGUOUS',
+              reconciledKnownCost ? knownActualMicrousd : null,
+              terminalAt,
+              runId,
+            ),
         );
       statements.push(
         this.terminalAuditStatement(
@@ -623,12 +739,17 @@ export class EditorialExecutionService {
         ),
         this.db
           .prepare(
-            `UPDATE intelligence_runs SET status=?,error_category=?,safe_error_detail=?,terminal_audit_event_id=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
+            `UPDATE intelligence_runs SET status=?,error_category=?,safe_error_detail=?,input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,terminal_audit_event_id=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
           )
           .bind(
             terminalStatus,
             mapped.category,
             mapped.message,
+            providerCompletion?.result.usage.inputUnits ?? null,
+            providerCompletion?.result.usage.outputUnits ?? null,
+            providerCompletion?.costs.actualCost ?? null,
+            providerCompletion?.costs.currency ?? null,
+            JSON.stringify(failureMetadata),
             auditId,
             terminalAt,
             terminalAt,
@@ -891,7 +1012,11 @@ export class EditorialExecutionService {
       task,
     );
   }
-  private observer(runId: string) {
+  private observer(
+    runId: string,
+    onProviderSucceeded: (result: ProviderExecutionResult) => Promise<void> = () =>
+      Promise.resolve(),
+  ) {
     return {
       started: async (attempt: number) => {
         const at = now();
@@ -915,8 +1040,7 @@ export class EditorialExecutionService {
       },
       succeeded: (attempt: number, result: ProviderExecutionResult) => {
         void attempt;
-        void result;
-        return Promise.resolve();
+        return onProviderSucceeded(result);
       },
       failed: (attempt: number, error: ProviderError) => {
         void attempt;

@@ -127,7 +127,7 @@ describe('governed terminal execution', () => {
   it('retains idempotent replay, terminal reconciliation, invalidation, and no provider Preflight', () => {
     expect(execution).toContain('Idempotency key is already bound to a different command.');
     expect(execution).toContain('idempotentReplay: true');
-    expect(execution).toContain("status='AMBIGUOUS'");
+    expect(execution).toContain("reconciledKnownCost ? 'RECONCILED' : 'AMBIGUOUS'");
     expect(execution).toContain("reconciled ? 'RECONCILED' : 'AMBIGUOUS'");
     expect(execution).toContain('invalidationFor(dependent.artifactType)');
     expect(execution).toContain("generation_readiness='NOT_READY'");
