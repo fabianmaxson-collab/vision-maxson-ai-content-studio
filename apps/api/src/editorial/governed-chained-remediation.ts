@@ -1,6 +1,7 @@
 import type { GovernedChainedRemediationCapacityCommand } from '@vision-maxson/contracts';
 import { newId } from '@vision-maxson/domain';
 import type { EditorialActor } from './repository';
+import { classifyChainedRemediationDiagnostic } from './chained-remediation-diagnostic';
 type Row = Record<string, unknown>;
 type AuditContext = {
   requestId: string;
@@ -57,7 +58,7 @@ export class GovernedChainedRemediationService {
     if (prior) return prior;
     const evidence = await this.db
       .prepare(
-        "SELECT p.remediation_envelope_id parentEnvelopeId,p.provider_id providerId,p.provider_model_id modelId,r.id reservationId FROM editorial_execution_remediations p JOIN editorial_project_execution_budgets pb ON pb.id=p.remediation_project_execution_budget_id JOIN editorial_execution_envelopes pe ON pe.id=p.remediation_envelope_id JOIN intelligence_runs run ON run.id=? JOIN editorial_execution_reservations r ON r.intelligence_run_id=run.id JOIN intelligence_run_attempts attempt ON attempt.intelligence_run_id=run.id JOIN ai_providers provider ON provider.id=p.provider_id JOIN ai_provider_models model ON model.id=p.provider_model_id AND model.provider_id=provider.id WHERE p.id=? AND p.workspace_id=? AND p.project_id=? AND p.profile_key='phase3_storyboard_remediation_v1' AND p.profile_version=1 AND p.stage_key='STORYBOARD_PLANNER' AND p.maximum_calls=1 AND pb.workspace_id=p.workspace_id AND pb.project_id=p.project_id AND pb.status='ACTIVE' AND pe.workspace_id=p.workspace_id AND pe.project_id=p.project_id AND pe.project_execution_budget_id=pb.id AND pe.status='CONSUMED' AND pe.maximum_calls=1 AND (SELECT COUNT(*) FROM editorial_execution_reservations used WHERE used.envelope_id=pe.id)=1 AND run.workspace_id=p.workspace_id AND run.project_id=p.project_id AND run.task_type='STORYBOARD_PLANNER' AND run.status='FAILED_PERMANENT' AND run.error_category='SCHEMA_VALIDATION' AND run.safe_error_detail='duplicate_continuity_key' AND r.workspace_id=p.workspace_id AND r.project_id=p.project_id AND r.project_execution_budget_id=pb.id AND r.envelope_id=pe.id AND r.status='RECONCILED' AND r.actual_microusd IS NOT NULL AND r.actual_microusd>=0 AND r.dispatched_at IS NOT NULL AND attempt.attempt_number=1 AND attempt.status='FAILED_PERMANENT' AND attempt.error_category='SCHEMA_VALIDATION' AND attempt.safe_error_detail='duplicate_continuity_key' AND (SELECT COUNT(*) FROM intelligence_run_attempts x WHERE x.intelligence_run_id=run.id)=1 AND NOT EXISTS (SELECT 1 FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE v.intelligence_run_id=run.id AND a.artifact_type='STORYBOARD') AND provider.key=? AND provider.status='configured' AND model.model_key=? AND model.status='available'",
+        "SELECT p.remediation_envelope_id parentEnvelopeId,p.provider_id providerId,p.provider_model_id modelId,r.id reservationId,run.safe_metadata_json runSafeMetadataJson,attempt.safe_metadata_json attemptSafeMetadataJson FROM editorial_execution_remediations p JOIN editorial_project_execution_budgets pb ON pb.id=p.remediation_project_execution_budget_id JOIN editorial_execution_envelopes pe ON pe.id=p.remediation_envelope_id JOIN intelligence_runs run ON run.id=? JOIN editorial_execution_reservations r ON r.intelligence_run_id=run.id JOIN intelligence_run_attempts attempt ON attempt.intelligence_run_id=run.id JOIN ai_providers provider ON provider.id=p.provider_id JOIN ai_provider_models model ON model.id=p.provider_model_id AND model.provider_id=provider.id WHERE p.id=? AND p.workspace_id=? AND p.project_id=? AND p.profile_key='phase3_storyboard_remediation_v1' AND p.profile_version=1 AND p.stage_key='STORYBOARD_PLANNER' AND p.maximum_calls=1 AND pb.workspace_id=p.workspace_id AND pb.project_id=p.project_id AND pb.status='ACTIVE' AND pe.workspace_id=p.workspace_id AND pe.project_id=p.project_id AND pe.project_execution_budget_id=pb.id AND pe.status='CONSUMED' AND pe.maximum_calls=1 AND (SELECT COUNT(*) FROM editorial_execution_reservations used WHERE used.envelope_id=pe.id)=1 AND run.workspace_id=p.workspace_id AND run.project_id=p.project_id AND run.task_type='STORYBOARD_PLANNER' AND run.status='FAILED_PERMANENT' AND run.error_category='SCHEMA_VALIDATION' AND r.workspace_id=p.workspace_id AND r.project_id=p.project_id AND r.project_execution_budget_id=pb.id AND r.envelope_id=pe.id AND r.status='RECONCILED' AND r.actual_microusd IS NOT NULL AND r.actual_microusd>=0 AND r.dispatched_at IS NOT NULL AND attempt.attempt_number=1 AND attempt.status='FAILED_PERMANENT' AND attempt.error_category='SCHEMA_VALIDATION' AND (SELECT COUNT(*) FROM intelligence_run_attempts x WHERE x.intelligence_run_id=run.id)=1 AND NOT EXISTS (SELECT 1 FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE v.intelligence_run_id=run.id AND a.artifact_type='STORYBOARD') AND provider.key=? AND provider.status='configured' AND model.model_key=? AND model.status='available'",
       )
       .bind(
         command.historicalRunId,
@@ -68,7 +69,14 @@ export class GovernedChainedRemediationService {
         command.modelKey,
       )
       .first<Row>();
-    if (!evidence) throw new Error('chained_remediation_historical_evidence_invalid');
+    if (
+      !evidence ||
+      classifyChainedRemediationDiagnostic(
+        evidence.runSafeMetadataJson,
+        evidence.attemptSafeMetadataJson,
+      ) !== 'duplicate_continuity_key'
+    )
+      throw new Error('chained_remediation_historical_evidence_invalid');
     if (
       await this.db
         .prepare(

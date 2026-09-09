@@ -15,10 +15,11 @@ const names = [
   '0008_remediation_evidence_expression_depth.sql',
   '0009_storyboard_continuity_prompt_v3.sql',
   '0010_governed_chained_remediation_v2.sql',
+  '0011_chained_remediation_diagnostic_evidence_compatibility.sql',
 ];
-describe('migration 0010 governed chained remediation v2', () => {
+describe('migrations 0010-0011 governed chained remediation v2', () => {
   it('is additive, forward-only, shallow, and preserves root semantics', () => {
-    const migration = sql(names.at(-1)!);
+    const migration = sql('0010_governed_chained_remediation_v2.sql');
     expect(migration).toContain('CREATE TABLE editorial_chained_execution_remediations');
     expect(migration).not.toMatch(/\b(?:DROP TABLE|ALTER TABLE|UPDATE|DELETE)\b/u);
     expect(migration).toContain(
@@ -39,7 +40,7 @@ describe('migration 0010 governed chained remediation v2', () => {
       16,
     );
   });
-  it('replays 0000-0010 with clean foreign keys and both immutable profiles', () => {
+  it('replays 0000-0011 with clean foreign keys and both immutable profiles', () => {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys=ON');
     for (const name of names) db.exec(sql(name));
@@ -64,6 +65,41 @@ describe('migration 0010 governed chained remediation v2', () => {
         )
         .get(),
     ).toEqual({ count: 12 });
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    db.close();
+  });
+});
+
+describe('migration 0011 diagnostic evidence compatibility', () => {
+  it('replaces only the two diagnostic guards without rewriting history', () => {
+    const migration = sql('0011_chained_remediation_diagnostic_evidence_compatibility.sql');
+    expect(migration.match(/DROP TRIGGER IF EXISTS/gu)).toHaveLength(2);
+    expect(migration.match(/CREATE TRIGGER/gu)).toHaveLength(2);
+    expect(migration).not.toMatch(/\b(?:DROP TABLE|ALTER TABLE|UPDATE|DELETE)\b/u);
+    expect(migration).not.toContain('safe_error_detail');
+    expect(migration).toContain("issues[0].message') IS NULL OR");
+  });
+  it('preserves unrelated 0010 guards during upgrade', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys=ON');
+    for (const name of names.slice(0, -1)) db.exec(sql(name));
+    const before = db
+      .prepare(
+        "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name GLOB 'chained_remediation_*_guard' ORDER BY name",
+      )
+      .all();
+    db.exec(sql(names.at(-1)!));
+    const after = db
+      .prepare(
+        "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name GLOB 'chained_remediation_*_guard' ORDER BY name",
+      )
+      .all();
+    expect(after).toHaveLength(10);
+    for (const row of before as Array<{ name: string; sql: string }>)
+      if (
+        !['chained_remediation_run_guard', 'chained_remediation_attempt_guard'].includes(row.name)
+      )
+        expect(after).toContainEqual(row);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     db.close();
   });

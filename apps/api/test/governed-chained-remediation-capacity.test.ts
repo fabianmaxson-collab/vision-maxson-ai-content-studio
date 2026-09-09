@@ -60,6 +60,7 @@ const names = [
   '0008_remediation_evidence_expression_depth.sql',
   '0009_storyboard_continuity_prompt_v3.sql',
   '0010_governed_chained_remediation_v2.sql',
+  '0011_chained_remediation_diagnostic_evidence_compatibility.sql',
 ];
 const valid = {
   workspaceId: 'workspace_primary',
@@ -74,6 +75,24 @@ const valid = {
   remediationProfileVersion: 2,
   reasonCategory: 'SCHEMA_VALIDATION_DUPLICATE_CONTINUITY_KEY',
 } as const;
+const diagnostic = JSON.stringify({
+  validationDiagnostic: {
+    validationLayer: 'application_schema',
+    schemaVersion: 'storyboard-output-v2',
+    totalIssueCount: 1,
+    capturedIssueCount: 1,
+    truncated: false,
+    issues: [
+      {
+        code: 'custom',
+        path: [],
+        pathTruncated: false,
+        category: 'duplicate_continuity_key',
+        message: 'Value does not satisfy the active output contract.',
+      },
+    ],
+  },
+});
 function fixture() {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys=ON');
@@ -104,10 +123,10 @@ function fixture() {
     UPDATE intelligence_runs SET status='FAILED_PERMANENT',error_category='SCHEMA_VALIDATION',safe_error_detail='schema_validation_failed',terminal_audit_event_id='root-terminal' WHERE id='root-run';
     INSERT INTO editorial_execution_remediations(id,workspace_id,project_id,original_project_execution_budget_id,expected_original_budget_version,historical_reservation_id,historical_run_id,historical_envelope_id,remediation_project_execution_budget_id,remediation_envelope_id,profile_key,profile_version,stage_key,provider_id,provider_model_id,additional_exposure_microusd,maximum_calls,maximum_attempts,sdk_max_retries,fallback_enabled,creative_regeneration_enabled,external_research_enabled,human_approval_required,reason_category,idempotency_key,command_hash,audit_event_id,authorized_by,created_at)
       VALUES('root-remediation','workspace_primary','project','original-budget',1,'root-reservation','root-run','original-envelope','root-budget','root-envelope','phase3_storyboard_remediation_v1',1,'STORYBOARD_PLANNER','provider','model',321920,1,1,0,0,0,0,1,'PROVIDER_OUTPUT_SCHEMA_VALIDATION_AMBIGUOUS','root-key','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','root-auth','owner','t');
-    INSERT INTO intelligence_runs(id,workspace_id,project_id,task_type,provider_id,provider_model_id,initiated_by,operating_mode,status,idempotency_key,error_category,safe_error_detail,created_at,updated_at) VALUES('child-run','workspace_primary','project','STORYBOARD_PLANNER','provider','model','owner','ASSISTED','RUNNING','child-run-key',NULL,NULL,'t','t');
+    INSERT INTO intelligence_runs(id,workspace_id,project_id,task_type,provider_id,provider_model_id,initiated_by,operating_mode,status,idempotency_key,error_category,safe_error_detail,safe_metadata_json,created_at,updated_at) VALUES('child-run','workspace_primary','project','STORYBOARD_PLANNER','provider','model','owner','ASSISTED','RUNNING','child-run-key',NULL,NULL,'${diagnostic}','t','t');
     INSERT INTO audit_events(id,workspace_id,actor_type,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES('child-terminal','workspace_primary','system','intelligence.run_failed','intelligence_run','child-run','failure','r2','test','{}','t','t');
-    INSERT INTO intelligence_run_attempts(id,intelligence_run_id,attempt_number,attempt_kind,status,error_category,safe_error_detail,started_at,completed_at) VALUES('child-attempt','child-run',1,'TECHNICAL','FAILED_PERMANENT','SCHEMA_VALIDATION','duplicate_continuity_key','t','t');
-    UPDATE intelligence_runs SET status='FAILED_PERMANENT',error_category='SCHEMA_VALIDATION',safe_error_detail='duplicate_continuity_key',terminal_audit_event_id='child-terminal' WHERE id='child-run';
+    INSERT INTO intelligence_run_attempts(id,intelligence_run_id,attempt_number,attempt_kind,status,error_category,safe_error_detail,safe_metadata_json,started_at,completed_at) VALUES('child-attempt','child-run',1,'TECHNICAL','FAILED_PERMANENT','SCHEMA_VALIDATION','Provider output failed validation.','${diagnostic}','t','t');
+    UPDATE intelligence_runs SET status='FAILED_PERMANENT',error_category='SCHEMA_VALIDATION',safe_error_detail='Provider output failed validation.',terminal_audit_event_id='child-terminal' WHERE id='child-run';
     INSERT INTO editorial_execution_reservations(id,envelope_id,workspace_id,project_id,intelligence_run_id,step_key,pricing_snapshot_id,reserved_microusd,actual_microusd,status,created_at,dispatched_at,reconciled_at,project_execution_budget_id) VALUES('child-reservation','root-envelope','workspace_primary','project','child-run','STORYBOARD_PLANNER','pricing',321920,88480,'RECONCILED','t','t','t','root-budget');
     UPDATE editorial_execution_envelopes SET status='CONSUMED',version=2 WHERE id='root-envelope';
   `);
@@ -204,8 +223,8 @@ describe('governed chained remediation v2', () => {
       "UPDATE intelligence_runs SET error_category='TIMEOUT' WHERE id='child-run'",
     ],
     [
-      'allowlisted diagnostic',
-      "UPDATE intelligence_runs SET safe_error_detail='other' WHERE id='child-run'",
+      'structured diagnostic',
+      "UPDATE intelligence_runs SET safe_metadata_json='{}' WHERE id='child-run'",
     ],
   ])('fails closed without writes when %s is invalid', async (_label, sql) => {
     const { db, service } = fixture();
@@ -241,7 +260,9 @@ describe('governed chained remediation v2', () => {
       new URL('../src/editorial/governed-chained-remediation.ts', import.meta.url),
       'utf8',
     );
-    const sql = migration('0010_governed_chained_remediation_v2.sql');
+    const sql =
+      migration('0010_governed_chained_remediation_v2.sql') +
+      migration('0011_chained_remediation_diagnostic_evidence_compatibility.sql');
     for (const token of [
       "r.status='RECONCILED'",
       'r.actual_microusd IS NOT NULL',
@@ -251,7 +272,6 @@ describe('governed chained remediation v2', () => {
       'COUNT(*) FROM editorial_execution_reservations',
       "run.status='FAILED_PERMANENT'",
       "run.error_category='SCHEMA_VALIDATION'",
-      "run.safe_error_detail='duplicate_continuity_key'",
       "a.artifact_type='STORYBOARD'",
     ])
       expect(source).toContain(token);
