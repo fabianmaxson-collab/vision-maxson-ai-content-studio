@@ -206,7 +206,7 @@ export async function loadGovernedRemediationEnvelope(
   selected: { providerKey: string; modelKey: string },
   remediationId: string,
 ) {
-  const envelope = await db
+  let envelope = await db
     .prepare(
       `SELECT e.id,e.project_execution_budget_id projectExecutionBudgetId,e.monetary_ceiling_microusd monetaryCeilingMicrousd,e.maximum_calls maximumCalls,e.status
        FROM editorial_execution_remediations r
@@ -267,6 +267,27 @@ export async function loadGovernedRemediationEnvelope(
       selected.modelKey,
     )
     .first<Row>();
+  const chainedSchema =
+    !envelope &&
+    (await db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='editorial_chained_execution_remediations'",
+      )
+      .first());
+  if (chainedSchema)
+    envelope = await db
+      .prepare(
+        "SELECT e.id,e.project_execution_budget_id projectExecutionBudgetId,e.monetary_ceiling_microusd monetaryCeilingMicrousd,e.maximum_calls maximumCalls,e.status FROM editorial_chained_execution_remediations r JOIN editorial_execution_remediations parent ON parent.id=r.parent_remediation_id JOIN editorial_project_execution_budgets b ON b.id=r.remediation_project_execution_budget_id JOIN editorial_execution_envelopes e ON e.id=r.remediation_envelope_id JOIN editorial_project_execution_budgets pb ON pb.id=parent.remediation_project_execution_budget_id JOIN editorial_execution_envelopes pe ON pe.id=parent.remediation_envelope_id JOIN editorial_execution_reservations hr ON hr.id=r.historical_reservation_id JOIN intelligence_runs hir ON hir.id=r.historical_run_id JOIN ai_providers p ON p.id=r.provider_id JOIN ai_provider_models m ON m.id=r.provider_model_id AND m.provider_id=p.id JOIN audit_events a ON a.id=r.audit_event_id WHERE r.id=? AND r.workspace_id=? AND r.project_id=? AND r.stage_key=? AND r.remediation_generation=2 AND r.profile_key='phase3_storyboard_chained_remediation_v2' AND r.profile_version=2 AND r.failure_category='SCHEMA_VALIDATION' AND r.diagnostic_category='duplicate_continuity_key' AND r.reason_category='SCHEMA_VALIDATION_DUPLICATE_CONTINUITY_KEY' AND r.maximum_calls=1 AND r.maximum_attempts=1 AND r.sdk_max_retries=0 AND r.fallback_enabled=0 AND r.creative_regeneration_enabled=0 AND r.external_research_enabled=0 AND r.human_approval_required=1 AND parent.workspace_id=r.workspace_id AND parent.project_id=r.project_id AND parent.remediation_project_execution_budget_id=pb.id AND parent.remediation_envelope_id=pe.id AND pb.status='ACTIVE' AND pe.status='CONSUMED' AND pe.maximum_calls=1 AND hr.workspace_id=r.workspace_id AND hr.project_id=r.project_id AND hr.project_execution_budget_id=pb.id AND hr.envelope_id=pe.id AND hr.intelligence_run_id=hir.id AND hr.status='RECONCILED' AND hr.actual_microusd IS NOT NULL AND hr.actual_microusd>=0 AND hr.dispatched_at IS NOT NULL AND hir.workspace_id=r.workspace_id AND hir.project_id=r.project_id AND hir.task_type='STORYBOARD_PLANNER' AND hir.status='FAILED_PERMANENT' AND hir.error_category=r.failure_category AND hir.safe_error_detail=r.diagnostic_category AND b.workspace_id=r.workspace_id AND b.project_id=r.project_id AND b.profile_key=r.profile_key AND b.profile_version=2 AND b.status='ACTIVE' AND b.currency='USD' AND b.monetary_ceiling_microusd=r.additional_exposure_microusd AND e.workspace_id=r.workspace_id AND e.project_id=r.project_id AND e.project_execution_budget_id=b.id AND e.profile_key=r.profile_key AND e.profile_version=2 AND e.stage_key=r.stage_key AND e.provider_id=r.provider_id AND e.provider_model_id=r.provider_model_id AND e.status='ACTIVE' AND e.maximum_calls=1 AND e.currency='USD' AND e.monetary_ceiling_microusd=r.additional_exposure_microusd AND (SELECT COUNT(*) FROM editorial_execution_reservations er WHERE er.envelope_id=e.id)<1 AND p.key=? AND p.status='configured' AND m.model_key=? AND m.status='available' AND a.workspace_id=r.workspace_id AND a.action='editorial.chained_remediation_capacity_authorized' AND a.resource_type='editorial_chained_execution_remediation' AND a.resource_id=r.id AND a.outcome='success'",
+      )
+      .bind(
+        remediationId,
+        actor.workspaceId,
+        projectId,
+        stage,
+        selected.providerKey,
+        selected.modelKey,
+      )
+      .first<Row>();
   if (!envelope)
     throw new ProviderError('PERMANENT', false, 'Remediation execution binding is invalid.');
   return envelope;

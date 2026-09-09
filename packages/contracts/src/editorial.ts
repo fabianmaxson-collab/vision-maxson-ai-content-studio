@@ -389,6 +389,24 @@ export const governedRemediationCapacitySchema = z
   })
   .strict();
 export type GovernedRemediationCapacityCommand = z.infer<typeof governedRemediationCapacitySchema>;
+export const governedChainedRemediationCapacitySchema = z
+  .object({
+    workspaceId: id,
+    parentRemediationId: id,
+    historicalRunId: id,
+    remediationStage: z.literal('STORYBOARD_PLANNER'),
+    providerKey: z.literal('openai'),
+    modelKey: z.literal('gpt-5.6-terra'),
+    remediationCeilingMicrousd: z.literal(321920),
+    maximumCalls: z.literal(1),
+    remediationProfileKey: z.literal('phase3_storyboard_chained_remediation_v2'),
+    remediationProfileVersion: z.literal(2),
+    reasonCategory: z.literal('SCHEMA_VALIDATION_DUPLICATE_CONTINUITY_KEY'),
+  })
+  .strict();
+export type GovernedChainedRemediationCapacityCommand = z.infer<
+  typeof governedChainedRemediationCapacitySchema
+>;
 export const terminalDependencyTypeSchema = z.enum([
   'GENERATED_FROM',
   'USES_RESEARCH',
