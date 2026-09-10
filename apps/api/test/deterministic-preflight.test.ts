@@ -73,7 +73,10 @@ function schema(version: 4 | 5) {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys=ON');
   for (const migration of migrations) database.exec(migrationSql(migration));
-  if (version === 5) database.exec(migrationSql('0005_deterministic_preflight_provenance.sql'));
+  if (version === 5) {
+    database.exec(migrationSql('0005_deterministic_preflight_provenance.sql'));
+    database.exec(migrationSql('0012_governed_editorial_revision_requests.sql'));
+  }
   return new CapabilityD1(database);
 }
 
@@ -132,7 +135,9 @@ function seedCoherentTerminalGraph(database: DatabaseSync) {
         `v_${type}`,
         `a_${type}`,
         language,
-        type === 'CONTENT_BRIEF' ? '{"reviewLanguage":"es"}' : '{}',
+        type === 'CONTENT_BRIEF'
+          ? '{"reviewLanguage":"es","researchVersionIds":["v_RESEARCH"]}'
+          : '{}',
         type.charCodeAt(0).toString(16).padStart(2, '0').repeat(32),
         sourceScript,
       );
@@ -145,6 +150,10 @@ function seedCoherentTerminalGraph(database: DatabaseSync) {
   database.exec(`
     INSERT INTO idea_candidates(id,workspace_id,project_id,artifact_id,artifact_version_id,title,target_format,status,evidence_class,created_at,updated_at,version,created_by,updated_by)
     VALUES('idea','workspace','project','a_IDEA_CANDIDATE','v_IDEA_CANDIDATE','Idea','SHORT','SELECTED','UNKNOWN','t','t',1,'owner','owner');
+    INSERT INTO research_sources(id,workspace_id,research_version_id,source_type,title,source_reference,verification_status,created_at,created_by)
+    VALUES('source','workspace','v_RESEARCH','ARCHIVE','Verified source','reference','owner_approved','t','owner');
+    INSERT INTO research_claims(id,workspace_id,research_version_id,source_id,claim_text,evidence_class,created_at,created_by)
+    VALUES('claim','workspace','v_RESEARCH','source','Concrete event','OBSERVED','t','owner');
   `);
   const dependencies: Array<[string, string, string]> = [
     ['v_RESEARCH', 'v_IDEA_CANDIDATE', 'GENERATED_FROM'],

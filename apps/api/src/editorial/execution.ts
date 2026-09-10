@@ -39,6 +39,7 @@ import {
 import { z } from 'zod';
 import { invalidationFor, type ArtifactType } from '@vision-maxson/domain';
 import type { EditorialActor } from './repository';
+import { assertEditorialProductionReady } from './readiness';
 
 type Task = z.infer<typeof intelligenceTaskSchema>;
 type ExecutionConfig = {
@@ -374,6 +375,15 @@ export class EditorialExecutionService {
         false,
         'Remediation execution is only supported for Storyboard.',
       );
+    if (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG')
+      await assertEditorialProductionReady(
+        this.db,
+        this.actor,
+        projectId,
+        'BEFORE_PRODUCTION_SCRIPT',
+      );
+    if (task === 'STORYBOARD_PLANNER')
+      await assertEditorialProductionReady(this.db, this.actor, projectId, 'BEFORE_STORYBOARD');
     if (!this.config.openAIEnabled || !this.config.openAIApiKey)
       throw new ProviderNotConfiguredError();
     const project = await this.projectContext(projectId, task, command.inputArtifactVersionId);

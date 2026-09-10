@@ -43,6 +43,27 @@ export const approvalSchema = z.object({
   decision: z.enum(['APPROVED', 'REJECTED']),
   comment: z.string().trim().max(4000).nullable().default(null),
 });
+
+export const revisionTargetStageSchema = z.literal('RESEARCH');
+
+export const revisionReasonCodeSchema = z.enum([
+  'UNRESOLVED_CENTRAL_EVENT',
+  'INSUFFICIENT_RESEARCH_EVIDENCE',
+  'EDITORIAL_DIRECTION_CHANGE',
+  'SCRIPT_REVISION_REQUIRED',
+  'STORYBOARD_REVISION_REQUIRED',
+]);
+export const revisionRequestSchema = z
+  .object({
+    targetStage: revisionTargetStageSchema,
+    reasonCode: revisionReasonCodeSchema,
+    comment: z.string().trim().min(1).max(4000).nullable().default(null),
+    expectedArtifactRevision: z.number().int().positive(),
+  })
+  .strict();
+export const revisionRequestResolutionSchema = z
+  .object({ resolutionArtifactVersionId: id })
+  .strict();
 export const researchClaimSchema = z
   .object({
     claim: z.string().trim().min(1).max(16000),

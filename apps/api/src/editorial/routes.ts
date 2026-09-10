@@ -5,6 +5,8 @@ import {
   governedChainedRemediationCapacitySchema,
   governedRemediationCapacitySchema,
   intelligenceCommandSchema,
+  revisionRequestResolutionSchema,
+  revisionRequestSchema,
   type intelligenceTaskSchema,
 } from '@vision-maxson/contracts';
 import { hasPermission, newId, type Permission } from '@vision-maxson/domain';
@@ -23,6 +25,7 @@ import { authorizeGovernedTerminalBudget } from './governed-budget';
 import { GovernedRemediationService } from './governed-remediation';
 import { GovernedChainedRemediationService } from './governed-chained-remediation';
 import { EditorialRepository, type EditorialActor } from './repository';
+import { EditorialRevisionService } from './revision';
 import type { z } from 'zod';
 
 type Vars = {
@@ -33,7 +36,7 @@ type Vars = {
 type Env = { Bindings: Bindings; Variables: Vars };
 const problem = (
   c: Context<Env>,
-  status: 403 | 404 | 409 | 422 | 503,
+  status: 403 | 404 | 409 | 422 | 500 | 503,
   title: string,
   detail: string,
 ) =>
@@ -47,6 +50,54 @@ const problem = (
     },
     status,
   );
+const revisionRouteIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{2,99}$/u;
+const validRevisionRouteId = (value: string) => revisionRouteIdPattern.test(value);
+const revisionRequestErrors = new Set([
+  'editorial_revision_schema_unavailable',
+  'revision_request_not_allowed',
+  'artifact_version_not_found',
+  'revision_reviewed_artifact_type_unsupported',
+  'stale_version_cannot_request_revision',
+  'revision_request_version_conflict',
+  'revision_target_stage_unavailable',
+  'revision_request_idempotency_conflict',
+  'revision_request_already_open',
+]);
+const revisionResolutionErrors = new Set([
+  'editorial_revision_schema_unavailable',
+  'revision_resolution_idempotency_conflict',
+  'revision_request_not_found',
+  'revision_request_already_resolved',
+  'revision_target_stage_unsupported',
+  'revision_request_target_not_superseded',
+  'revision_request_resolution_storyboard_invalid',
+]);
+function revisionFailure(c: Context<Env>, error: unknown, operation: 'request' | 'resolve') {
+  const message = error instanceof Error ? error.message : '';
+  const known =
+    (operation === 'request' ? revisionRequestErrors : revisionResolutionErrors).has(message) ||
+    (operation === 'resolve' && message.startsWith('revision_request_not_resolved:'));
+  if (!known) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'editorial_revision_unexpected_error',
+        operation,
+        requestId: c.get('requestId'),
+      }),
+    );
+    return problem(c, 500, 'Internal Server Error', 'The request could not be completed.');
+  }
+  if (message === 'artifact_version_not_found' || message === 'revision_request_not_found')
+    return problem(c, 404, 'Not Found', message);
+  const conflict =
+    message.includes('conflict') ||
+    message.includes('stale') ||
+    message.includes('already_open') ||
+    message.includes('already_resolved');
+  return problem(c, conflict ? 409 : 422, conflict ? 'Conflict' : 'Validation Failed', message);
+}
+
 const requirePermission =
   (permission: Permission): MiddlewareHandler<Env> =>
   async (c, next) =>
@@ -202,6 +253,57 @@ editorialRoutes.post(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'approval_failed';
       return problem(c, message.includes('stale') ? 409 : 422, 'Validation Failed', message);
+    }
+  },
+);
+const revisionService = (c: Context<Env>) =>
+  new EditorialRevisionService(c.env.DB, c.get('user'), {
+    requestId: c.get('requestId'),
+    environment: c.env.ENVIRONMENT,
+    accessIssuer: c.get('identity').issuer,
+    accessSubject: c.get('identity').subject,
+  });
+editorialRoutes.post(
+  '/editorial-artifact-versions/:versionId/request-revision',
+  requirePermission('editorial:approve'),
+  async (c) => {
+    const versionId = c.req.param('versionId');
+    const parsed = revisionRequestSchema.safeParse(await c.req.json().catch(() => null));
+    const key = c.req.header('Idempotency-Key')?.trim();
+    if (!validRevisionRouteId(versionId) || !parsed.success || !key || key.length > 200)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid revision request and Idempotency-Key are required.',
+      );
+    try {
+      const result = await revisionService(c).request(versionId, key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      return revisionFailure(c, error, 'request');
+    }
+  },
+);
+editorialRoutes.post(
+  '/editorial-revision-requests/:requestId/resolve',
+  requirePermission('editorial:approve'),
+  async (c) => {
+    const requestId = c.req.param('requestId');
+    const parsed = revisionRequestResolutionSchema.safeParse(await c.req.json().catch(() => null));
+    const key = c.req.header('Idempotency-Key')?.trim();
+    if (!validRevisionRouteId(requestId) || !parsed.success || !key || key.length > 200)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid revision resolution and Idempotency-Key are required.',
+      );
+    try {
+      const result = await revisionService(c).resolve(requestId, key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      return revisionFailure(c, error, 'resolve');
     }
   },
 );

@@ -68,6 +68,42 @@ export const artifactStatusEvents = sqliteTable('artifact_status_events', {
   actorId: text('actor_id'),
   occurredAt: text('occurred_at').notNull(),
 });
+export const editorialRevisionRequests = sqliteTable('editorial_revision_requests', {
+  id: text('id').primaryKey(),
+  workspaceId: text('workspace_id').notNull(),
+  projectId: text('project_id').notNull(),
+  reviewedArtifactId: text('reviewed_artifact_id').notNull(),
+  reviewedArtifactVersionId: text('reviewed_artifact_version_id').notNull(),
+  reviewedArtifactRevision: integer('reviewed_artifact_revision').notNull(),
+  targetStage: text('target_stage').notNull(),
+  targetBaselineVersionId: text('target_baseline_version_id').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  comment: text('comment'),
+  status: text('status').notNull(),
+  actorId: text('actor_id').notNull(),
+  actorRole: text('actor_role').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  commandHash: text('command_hash').notNull(),
+  auditEventId: text('audit_event_id').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+export const editorialRevisionRequestResolutions = sqliteTable(
+  'editorial_revision_request_resolutions',
+  {
+    id: text('id').primaryKey(),
+    workspaceId: text('workspace_id').notNull(),
+    projectId: text('project_id').notNull(),
+    revisionRequestId: text('revision_request_id').notNull(),
+    status: text('status').notNull(),
+    resolutionArtifactVersionId: text('resolution_artifact_version_id').notNull(),
+    resolutionEvidenceJson: text('resolution_evidence_json').notNull(),
+    resolvedBy: text('resolved_by').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    commandHash: text('command_hash').notNull(),
+    auditEventId: text('audit_event_id').notNull(),
+    resolvedAt: text('resolved_at').notNull(),
+  },
+);
 export const researchSources = sqliteTable('research_sources', {
   id: text('id').primaryKey(),
   workspaceId: text('workspace_id').notNull(),

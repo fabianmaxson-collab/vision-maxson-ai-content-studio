@@ -1,4 +1,5 @@
 import { countWords, invalidationFor, type ArtifactType, type Role } from '@vision-maxson/domain';
+import { assertEditorialRevisionSchemaReady } from './readiness';
 
 export interface EditorialActor {
   id: string;
@@ -176,6 +177,7 @@ export class EditorialRepository {
     comment: string | null,
     preflightReadiness: 'READY_FOR_GENERATION' | 'NOT_READY' | null = null,
   ) {
+    await assertEditorialRevisionSchemaReady(this.db);
     const version = await this.db
       .prepare(
         `SELECT v.id,v.artifact_id AS artifactId,a.current_version_id AS currentVersionId FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE v.id=? AND v.workspace_id=?`,
@@ -184,6 +186,15 @@ export class EditorialRepository {
       .first<{ id: string; artifactId: string; currentVersionId: string | null }>();
     if (!version) throw new Error('artifact_version_not_found');
     if (version.currentVersionId !== versionId) throw new Error('stale_version_cannot_be_approved');
+    if (decision === 'APPROVED') {
+      const openRevision = await this.db
+        .prepare(
+          `SELECT r.id FROM editorial_revision_requests r LEFT JOIN editorial_revision_request_resolutions x ON x.revision_request_id=r.id WHERE r.workspace_id=? AND r.reviewed_artifact_version_id=? AND x.id IS NULL LIMIT 1`,
+        )
+        .bind(this.actor.workspaceId, versionId)
+        .first();
+      if (openRevision) throw new Error('open_revision_request_blocks_approval');
+    }
     const role = this.actor.roles.find((value) => value !== 'viewer');
     if (!role) throw new Error('approval_not_allowed');
     const approvalId = id('approval'),

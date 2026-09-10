@@ -8,6 +8,7 @@ import {
   type TerminalPreflightSnapshot,
 } from '@vision-maxson/domain';
 import type { EditorialActor } from './repository';
+import { evaluateEditorialProductionReadiness } from './readiness';
 type Row = Record<string, unknown>;
 const uid = (p: string) => `${p}_${crypto.randomUUID()}`,
   at = () => new Date().toISOString();
@@ -273,6 +274,14 @@ export class DeterministicPreflightService {
   async calculate(projectId: string) {
     if (!(await deterministicPreflightSchemaReady(this.db)))
       throw new Error('deterministic_preflight_schema_unavailable');
+    const editorialReadiness = await evaluateEditorialProductionReadiness(
+      this.db,
+      this.actor,
+      projectId,
+      'BEFORE_PREFLIGHT',
+    );
+    if (!editorialReadiness.ready)
+      throw new Error(`editorial_production_not_ready:${editorialReadiness.blockers.join(',')}`);
     const old = await this.db
       .prepare(
         `SELECT id,current_version_id currentVersionId FROM editorial_artifacts WHERE workspace_id=? AND project_id=? AND artifact_type='PREFLIGHT' AND deleted_at IS NULL`,
