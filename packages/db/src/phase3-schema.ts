@@ -104,6 +104,24 @@ export const editorialRevisionRequestResolutions = sqliteTable(
     resolvedAt: text('resolved_at').notNull(),
   },
 );
+export const editorialResearchRevisionImports = sqliteTable('editorial_research_revision_imports', {
+  id: text('id').primaryKey(),
+  workspaceId: text('workspace_id').notNull(),
+  projectId: text('project_id').notNull(),
+  revisionRequestId: text('revision_request_id').notNull(),
+  researchArtifactId: text('research_artifact_id').notNull(),
+  parentResearchVersionId: text('parent_research_version_id').notNull(),
+  newResearchVersionId: text('new_research_version_id').notNull(),
+  expectedArtifactRevision: integer('expected_artifact_revision').notNull(),
+  actorId: text('actor_id').notNull(),
+  actorRole: text('actor_role').notNull(),
+  auditEventId: text('audit_event_id').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  commandHash: text('command_hash').notNull(),
+  resultJson: text('result_json').notNull(),
+  environment: text('environment').notNull(),
+  createdAt: text('created_at').notNull(),
+});
 export const researchSources = sqliteTable('research_sources', {
   id: text('id').primaryKey(),
   workspaceId: text('workspace_id').notNull(),

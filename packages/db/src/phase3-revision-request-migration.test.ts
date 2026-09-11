@@ -52,6 +52,11 @@ function audit(db: DatabaseSync, id: string, action: string, resourceId: string,
 }
 
 describe('migration 0012 governed editorial revision requests', () => {
+  it('remains the immutable predecessor for governed Research imports', () => {
+    expect(sql('0012_governed_editorial_revision_requests.sql')).not.toContain(
+      'editorial_research_revision_imports',
+    );
+  });
   it('is additive, forward-only and leaves migrations 0000-0011 unchanged', () => {
     const before = Object.fromEntries(names.slice(0, -1).map((name) => [name, hash(name)]));
     const migration = sql(names.at(-1)!);

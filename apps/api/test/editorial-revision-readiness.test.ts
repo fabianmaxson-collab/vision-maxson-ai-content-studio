@@ -8,6 +8,7 @@ import { DeterministicPreflightService } from '../src/editorial/preflight';
 import { evaluateEditorialProductionReadiness } from '../src/editorial/readiness';
 import { EditorialRepository, type EditorialActor } from '../src/editorial/repository';
 import { EditorialRevisionService } from '../src/editorial/revision';
+import { GovernedResearchRevisionService } from '../src/editorial/research-revision';
 
 const migrations = [
   '0000_phase_1_data_security_core.sql',
@@ -23,6 +24,7 @@ const migrations = [
   '0010_governed_chained_remediation_v2.sql',
   '0011_chained_remediation_diagnostic_evidence_compatibility.sql',
   '0012_governed_editorial_revision_requests.sql',
+  '0013_governed_imported_research_revision.sql',
 ] as const;
 const migration = (name: string) =>
   readFileSync(new URL(`../../../packages/db/migrations/${name}`, import.meta.url), 'utf8');
@@ -66,12 +68,12 @@ class AtomicD1 {
   }
 }
 const actor: EditorialActor = { id: 'owner', workspaceId: 'workspace', roles: ['owner'] };
-function fixture(evidence = true, includeRevisionSchema = true) {
+function fixture(evidence = true, includeRevisionSchema = true, schemaVersion = 13) {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys=ON');
-  (includeRevisionSchema ? migrations : migrations.slice(0, -1)).forEach((name) =>
-    database.exec(migration(name)),
-  );
+  migrations
+    .filter((name) => Number(name.slice(0, 4)) <= (includeRevisionSchema ? schemaVersion : 11))
+    .forEach((name) => database.exec(migration(name)));
   database.exec(`
     INSERT INTO workspaces(id,slug,name,created_at,updated_at,version) VALUES('workspace','workspace','Workspace','t','t',1),('other','other','Other','t','t',1);
     INSERT INTO users(id,workspace_id,email,status,created_at,updated_at,version) VALUES('owner','workspace','owner@example.test','active','t','t',1),('viewer','workspace','viewer@example.test','active','t','t',1),('other-user','other','other@example.test','active','t','t',1);
@@ -943,5 +945,189 @@ describe('BLOCK 9CB revision route validation and error safety', () => {
         .get(),
     ).toEqual({ count: 0 });
     log.mockRestore();
+  });
+});
+
+describe('governed Research revision readiness integration', () => {
+  const imported = {
+    expectedResearchArtifactId: 'research',
+    expectedParentVersionId: 'research-v1',
+    expectedArtifactRevision: 2,
+    languageCode: 'de',
+    summary: 'Verified revised research.',
+    sources: [
+      {
+        key: 'archive-1',
+        sourceType: 'ARCHIVE',
+        title: 'Municipal archive record',
+        sourceUrl: null,
+        sourceReference: 'Archive shelf A-1',
+        publishedAt: '2025-01-01T00:00:00.000Z',
+        retrievedAt: '2025-02-01T00:00:00.000Z',
+        verificationStatus: 'owner_approved' as const,
+        contentHash: 'a'.repeat(64),
+      },
+    ],
+    claims: [
+      {
+        claimText: 'The documented event occurred.',
+        sourceKey: 'archive-1',
+        evidenceClass: 'OBSERVED' as const,
+        excerpt: 'Contemporaneous entry confirming the event.',
+        confidence: 1,
+      },
+    ],
+  };
+  const researchService = (d1: D1Database, selectedActor: EditorialActor = actor) =>
+    new GovernedResearchRevisionService(d1, selectedActor, {
+      requestId: 'import-http-request',
+      environment: 'test',
+      accessIssuer: accessIdentity.issuer,
+      accessSubject: accessIdentity.subject,
+    });
+
+  it('atomically creates one immutable imported successor with linked evidence and invalidates descendants', async () => {
+    const { database, d1 } = fixture();
+    database.exec("UPDATE editorial_artifacts SET version=3 WHERE id='research'");
+    const request = await service(d1).request('storyboard-v1', 'request-key', command);
+    const result = await researchService(d1).create(String(request.id), 'import-key', {
+      ...imported,
+      expectedArtifactRevision: 3,
+    });
+
+    expect(result).toMatchObject({
+      revisionRequestId: request.id,
+      researchArtifactId: 'research',
+      parentVersionId: 'research-v1',
+      versionNumber: 2,
+      idempotentReplay: false,
+    });
+    expect(
+      database
+        .prepare(
+          'SELECT source_type sourceType,parent_version_id parentVersionId,language_code languageCode FROM editorial_artifact_versions WHERE id=?',
+        )
+        .get(result.versionId),
+    ).toEqual({ sourceType: 'IMPORTED', parentVersionId: 'research-v1', languageCode: 'de' });
+    expect(
+      database
+        .prepare(
+          "SELECT current_version_id currentVersionId,status,version FROM editorial_artifacts WHERE id='research'",
+        )
+        .get(),
+    ).toEqual({ currentVersionId: result.versionId, status: 'active', version: 4 });
+    expect(count(database, 'research_sources')).toBe(2);
+    expect(count(database, 'research_claims')).toBe(2);
+    expect(
+      database
+        .prepare(
+          'SELECT source_id IS NOT NULL linked,evidence_class evidenceClass FROM research_claims WHERE research_version_id=?',
+        )
+        .get(result.versionId),
+    ).toEqual({ linked: 1, evidenceClass: 'OBSERVED' });
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) count FROM artifact_dependencies WHERE source_artifact_version_id='research-v1' AND validity_status!='CURRENT'",
+        )
+        .get(),
+    ).toEqual({ count: 2 });
+    expect(count(database, 'artifact_approvals')).toBe(5);
+    expect(count(database, 'editorial_revision_request_resolutions')).toBe(0);
+    expect(
+      database
+        .prepare('SELECT status FROM editorial_revision_requests WHERE id=?')
+        .get(String(request.id)),
+    ).toEqual({ status: 'OPEN' });
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('replays once and rejects a second successor or conflicting key without duplicate persistence', async () => {
+    const { database, d1 } = fixture();
+    const request = await service(d1).request('storyboard-v1', 'request-key', command);
+    const first = await researchService(d1).create(String(request.id), 'import-key', imported);
+    const replay = await researchService(d1).create(String(request.id), 'import-key', imported);
+    expect(replay).toMatchObject({ versionId: first.versionId, idempotentReplay: true });
+    await expect(
+      researchService(d1).create(String(request.id), 'other-key', imported),
+    ).rejects.toThrow('research_parent_not_current');
+    expect(count(database, 'editorial_research_revision_imports')).toBe(1);
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) count FROM audit_events WHERE action='editorial.research_revision_imported'",
+        )
+        .get(),
+    ).toEqual({ count: 1 });
+  });
+
+  it('rejects an unassigned actor role without any writes', async () => {
+    const { database, d1 } = fixture();
+    const request = await service(d1).request('storyboard-v1', 'request-key', command);
+    const before = {
+      versions: count(database, 'editorial_artifact_versions'),
+      sources: count(database, 'research_sources'),
+      claims: count(database, 'research_claims'),
+      audits: count(database, 'audit_events'),
+    };
+    await expect(
+      researchService(d1, { ...actor, roles: ['operator'] }).create(
+        String(request.id),
+        'invalid-role-key',
+        imported,
+      ),
+    ).rejects.toThrow();
+    expect({
+      versions: count(database, 'editorial_artifact_versions'),
+      sources: count(database, 'research_sources'),
+      claims: count(database, 'research_claims'),
+      audits: count(database, 'audit_events'),
+    }).toEqual(before);
+    expect(
+      database
+        .prepare(
+          "SELECT current_version_id currentVersionId,version FROM editorial_artifacts WHERE id='research'",
+        )
+        .get(),
+    ).toEqual({ currentVersionId: 'research-v1', version: 2 });
+  });
+
+  it('fails closed for schema 0012 and an unauthorized actor before persistence', async () => {
+    const legacy = fixture(true, true, 12);
+    await expect(
+      researchService(legacy.d1).create('revision-request', 'legacy-key', imported),
+    ).rejects.toThrow('research_revision_schema_unavailable');
+    expect(count(legacy.database, 'editorial_artifact_versions')).toBe(6);
+
+    const current = fixture();
+    await expect(
+      researchService(current.d1, { ...actor, roles: ['viewer'] }).create(
+        'revision-request',
+        'viewer-key',
+        imported,
+      ),
+    ).rejects.toThrow('research_revision_not_allowed');
+    expect(count(current.database, 'editorial_research_revision_imports')).toBe(0);
+  });
+
+  it('rejects stale topology and workspace mismatches without writes', async () => {
+    const { database, d1 } = fixture();
+    const request = await service(d1).request('storyboard-v1', 'request-key', command);
+    const before = count(database, 'editorial_artifact_versions');
+    await expect(
+      researchService(d1).create(String(request.id), 'stale-key', {
+        ...imported,
+        expectedArtifactRevision: 1,
+      }),
+    ).rejects.toThrow('research_revision_version_conflict');
+    await expect(
+      researchService(d1, { id: 'other-user', workspaceId: 'other', roles: ['owner'] }).create(
+        String(request.id),
+        'workspace-key',
+        imported,
+      ),
+    ).rejects.toThrow('revision_request_not_found');
+    expect(count(database, 'editorial_artifact_versions')).toBe(before);
+    expect(count(database, 'editorial_research_revision_imports')).toBe(0);
   });
 });

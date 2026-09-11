@@ -64,6 +64,125 @@ export const revisionRequestSchema = z
 export const revisionRequestResolutionSchema = z
   .object({ resolutionArtifactVersionId: id })
   .strict();
+export function normalizeResearchClaim(value: string): string {
+  return value.trim().normalize('NFC').replace(/\s+/gu, ' ').toLowerCase();
+}
+
+const importedSourceKey = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u);
+const importedTimestamp = z.string().max(64).datetime({ offset: true });
+const importedSource = z
+  .object({
+    key: importedSourceKey,
+    sourceType: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Z][A-Z0-9_]{0,63}$/u),
+    title: z.string().trim().min(1).max(1000),
+    sourceUrl: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2048)
+      .url()
+      .refine((v) => {
+        try {
+          return new URL(v).protocol === 'https:';
+        } catch {
+          return false;
+        }
+      })
+      .nullable()
+      .default(null),
+    sourceReference: z.string().trim().min(1).max(4000).nullable().default(null),
+    publishedAt: importedTimestamp.nullable().default(null),
+    retrievedAt: importedTimestamp,
+    verificationStatus: z.enum(['owner_approved', 'externally_verified']),
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
+  })
+  .strict()
+  .superRefine((v, c) => {
+    if (v.sourceUrl === null && v.sourceReference === null)
+      c.addIssue({ code: 'custom', message: 'source_locator_required' });
+    if (v.publishedAt !== null && Date.parse(v.publishedAt) > Date.parse(v.retrievedAt))
+      c.addIssue({ code: 'custom', message: 'source_date_invalid' });
+  });
+const importedClaim = z
+  .object({
+    claimText: z.string().trim().min(1).max(16000),
+    sourceKey: importedSourceKey,
+    evidenceClass: z.literal('OBSERVED'),
+    excerpt: z.string().trim().min(1).max(4000),
+    confidence: z.number().min(0).max(1).nullable(),
+  })
+  .strict();
+export const governedImportedResearchRevisionSchema = z
+  .object({
+    expectedResearchArtifactId: id,
+    expectedParentVersionId: id,
+    expectedArtifactRevision: z.number().int().positive(),
+    languageCode: languageCodeSchema,
+    summary: z.string().trim().min(1).max(32000),
+    sources: z.array(importedSource).min(1).max(50),
+    claims: z.array(importedClaim).min(1).max(100),
+  })
+  .strict()
+  .superRefine((v, c) => {
+    if (new TextEncoder().encode(JSON.stringify(v)).byteLength > 262144)
+      c.addIssue({ code: 'custom', message: 'research_revision_too_large' });
+    const keys = new Set<string>(),
+      used = new Set<string>(),
+      claims = new Set<string>();
+    v.sources.forEach((s, i) => {
+      if (keys.has(s.key))
+        c.addIssue({
+          code: 'custom',
+          path: ['sources', i, 'key'],
+          message: 'duplicate_source_key',
+        });
+      keys.add(s.key);
+    });
+    v.claims.forEach((x, i) => {
+      if (!keys.has(x.sourceKey))
+        c.addIssue({
+          code: 'custom',
+          path: ['claims', i, 'sourceKey'],
+          message: 'unknown_source_key',
+        });
+      used.add(x.sourceKey);
+      const key = `${x.sourceKey}\0${normalizeResearchClaim(x.claimText)}`;
+      if (claims.has(key))
+        c.addIssue({ code: 'custom', path: ['claims', i], message: 'duplicate_claim' });
+      claims.add(key);
+    });
+    v.sources.forEach((s, i) => {
+      if (!used.has(s.key))
+        c.addIssue({ code: 'custom', path: ['sources', i], message: 'unused_source' });
+    });
+  });
+export type GovernedImportedResearchRevisionCommand = z.infer<
+  typeof governedImportedResearchRevisionSchema
+>;
+export const researchRevisionReceiptResultSchema = z
+  .object({
+    receiptId: id,
+    revisionRequestId: id,
+    projectId: id,
+    researchArtifactId: id,
+    parentVersionId: id,
+    versionId: id,
+    versionNumber: z.number().int().positive(),
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
+    auditEventId: id,
+  })
+  .strict();
+
 export const researchClaimSchema = z
   .object({
     claim: z.string().trim().min(1).max(16000),

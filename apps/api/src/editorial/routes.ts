@@ -4,6 +4,7 @@ import {
   governedTerminalBudgetSchema,
   governedChainedRemediationCapacitySchema,
   governedRemediationCapacitySchema,
+  governedImportedResearchRevisionSchema,
   intelligenceCommandSchema,
   revisionRequestResolutionSchema,
   revisionRequestSchema,
@@ -26,6 +27,7 @@ import { GovernedRemediationService } from './governed-remediation';
 import { GovernedChainedRemediationService } from './governed-chained-remediation';
 import { EditorialRepository, type EditorialActor } from './repository';
 import { EditorialRevisionService } from './revision';
+import { GovernedResearchRevisionService } from './research-revision';
 import type { z } from 'zod';
 
 type Vars = {
@@ -71,6 +73,20 @@ const revisionResolutionErrors = new Set([
   'revision_target_stage_unsupported',
   'revision_request_target_not_superseded',
   'revision_request_resolution_storyboard_invalid',
+]);
+const researchRevisionErrors = new Set([
+  'research_revision_schema_unavailable',
+  'research_revision_not_allowed',
+  'revision_request_not_found',
+  'revision_request_already_resolved',
+  'revision_target_stage_unsupported',
+  'research_artifact_not_found',
+  'research_parent_not_current',
+  'research_revision_version_conflict',
+  'research_revision_idempotency_conflict',
+  'research_revision_duplicate_source',
+  'research_revision_evidence_invalid',
+  'research_revision_successor_conflict',
 ]);
 function revisionFailure(c: Context<Env>, error: unknown, operation: 'request' | 'resolve') {
   const message = error instanceof Error ? error.message : '';
@@ -304,6 +320,54 @@ editorialRoutes.post(
       return c.json(result, result.idempotentReplay ? 200 : 201);
     } catch (error) {
       return revisionFailure(c, error, 'resolve');
+    }
+  },
+);
+editorialRoutes.post(
+  '/editorial-revision-requests/:requestId/research-revision',
+  requirePermission('editorial:write'),
+  async (c) => {
+    const requestId = c.req.param('requestId'),
+      key = c.req.header('Idempotency-Key')?.trim();
+    const parsed = governedImportedResearchRevisionSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!validRevisionRouteId(requestId) || !key || key.length > 200 || !parsed.success)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid imported Research revision and Idempotency-Key are required.',
+      );
+    try {
+      const result = await new GovernedResearchRevisionService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: c.get('identity').issuer,
+        accessSubject: c.get('identity').subject,
+      }).create(requestId, key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (message === 'research_revision_receipt_invalid')
+        return problem(c, 500, 'Internal Server Error', message);
+      if (!researchRevisionErrors.has(message)) {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'research_revision_unexpected_error',
+            requestId: c.get('requestId'),
+          }),
+        );
+        return problem(c, 500, 'Internal Server Error', 'The request could not be completed.');
+      }
+      if (message === 'revision_request_not_found' || message === 'research_artifact_not_found')
+        return problem(c, 404, 'Not Found', message);
+      const conflict =
+        message.includes('conflict') ||
+        message.includes('not_current') ||
+        message.includes('already_resolved');
+      return problem(c, conflict ? 409 : 422, conflict ? 'Conflict' : 'Validation Failed', message);
     }
   },
 );
