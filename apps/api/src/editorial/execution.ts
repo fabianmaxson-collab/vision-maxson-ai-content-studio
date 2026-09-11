@@ -121,7 +121,7 @@ function renderPrompt(template: string, context: Row) {
   const variables = [...template.matchAll(/\{\{([a-z_]+)\}\}/gu)].map((match) => match[1]);
   if (variables.some((variable) => variable !== 'context_json'))
     throw new ProviderError('PERMANENT', false, 'Prompt contains an unsupported variable.');
-  return template.replaceAll('{{context_json}}', JSON.stringify(context));
+  return template.replaceAll('{{context_json}}', () => JSON.stringify(context));
 }
 const boundedExecutionProfileContext = (profile: BoundedExecutionProfile) => ({
   key: profile.key,
@@ -417,7 +417,12 @@ export class EditorialExecutionService {
       await assertEditorialProductionReady(this.db, this.actor, projectId, 'BEFORE_STORYBOARD');
     if (!this.config.openAIEnabled || !this.config.openAIApiKey)
       throw new ProviderNotConfiguredError();
-    const project = await this.projectContext(projectId, task, command.inputArtifactVersionId);
+    const project = await this.projectContext(
+      projectId,
+      task,
+      command.inputArtifactVersionId,
+      ideaCapacity !== null,
+    );
     if (task === 'SCRIPT_WRITER_SHORT' && project.format !== 'SHORT')
       throw new ProviderError(
         'PERMANENT',
@@ -442,6 +447,8 @@ export class EditorialExecutionService {
       }>();
     if (!prompt)
       throw new ProviderError('PERMANENT', false, 'Active prompt version is unavailable.');
+    if (ideaCapacity && !prompt.templateText.includes('{{context_json}}'))
+      throw new IdeaCapacityError(422, 'idea_revision_context_unavailable');
     const selectedOutputSchema =
       task !== 'STORYBOARD_PLANNER'
         ? outputSchema[task]
@@ -937,7 +944,12 @@ export class EditorialExecutionService {
       .run();
     return { id: runId, status: 'CANCELLED' };
   }
-  private async projectContext(projectId: string, task: Task, inputVersionId: string | null) {
+  private async projectContext(
+    projectId: string,
+    task: Task,
+    inputVersionId: string | null,
+    researchOnly = false,
+  ) {
     const project = await this.db
       .prepare(
         `SELECT p.id,p.title,p.description,p.format,p.operating_mode AS operatingMode,p.primary_language AS primaryLanguage,b.name AS brandName,b.niche,c.name AS channelName,c.narrative_tone AS narrativeTone,c.editorial_strategy_json AS editorialStrategyJson FROM projects p JOIN content_brands b ON b.id=p.content_brand_id JOIN channel_profiles c ON c.id=p.channel_profile_id WHERE p.id=? AND p.workspace_id=? AND p.deleted_at IS NULL`,
@@ -951,12 +963,16 @@ export class EditorialExecutionService {
       primaryLanguage: project.primaryLanguage,
       reviewLanguage: 'es',
     });
-    const artifacts = await this.db
-      .prepare(
-        `SELECT a.artifact_type AS artifactType,v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson FROM editorial_artifacts a JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.project_id=? AND a.workspace_id=? AND a.deleted_at IS NULL AND a.status='approved' ORDER BY a.artifact_type`,
-      )
-      .bind(projectId, this.actor.workspaceId)
-      .all<Row>();
+    // Revision Ideas start from their exact Research input. Downstream approval
+    // does not establish freshness after a Research revision, so do not load it.
+    const artifacts = researchOnly
+      ? { results: [] as Row[] }
+      : await this.db
+          .prepare(
+            `SELECT a.artifact_type AS artifactType,v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson FROM editorial_artifacts a JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.project_id=? AND a.workspace_id=? AND a.deleted_at IS NULL AND a.status='approved' ORDER BY a.artifact_type`,
+          )
+          .bind(projectId, this.actor.workspaceId)
+          .all<Row>();
     const lineage: LineageEdge[] = [];
     let storyboardSourceSegments: Row[] = [];
     const exactCurrentApproved = async (versionId: string | null, artifactType: string) => {
@@ -988,6 +1004,29 @@ export class EditorialExecutionService {
       );
     if (task === 'IDEA_GENERATION') {
       const research = await exactCurrentApproved(inputVersionId, 'RESEARCH');
+      if (researchOnly) {
+        let summary: unknown;
+        try {
+          summary =
+            typeof research.contentJson === 'string'
+              ? (JSON.parse(research.contentJson) as Row | null)?.summary
+              : null;
+        } catch {
+          throw new IdeaCapacityError(422, 'idea_revision_context_unavailable');
+        }
+        if (
+          !(typeof research.contentText === 'string' && research.contentText.trim()) &&
+          !(typeof summary === 'string' && summary.trim())
+        )
+          throw new IdeaCapacityError(422, 'idea_revision_context_unavailable');
+        artifacts.results.push({
+          artifactType: research.artifactType,
+          versionId: research.versionId,
+          languageCode: research.languageCode,
+          contentText: research.contentText,
+          contentJson: research.contentJson,
+        });
+      }
       lineage.push({
         sourceVersionId: String(research.versionId),
         dependencyType: 'GENERATED_FROM',

@@ -3,7 +3,10 @@ import { createApp, type Bindings } from '../src/app';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { EditorialExecutionService } from '../src/editorial/execution';
+import {
+  EditorialExecutionService,
+  providerBoundRequestMaterial,
+} from '../src/editorial/execution';
 import { OpenAIResponsesAdapter } from '@vision-maxson/providers/openai';
 import { governedImportedResearchRevisionSchema } from '@vision-maxson/contracts';
 import type { EditorialActor } from '../src/editorial/repository';
@@ -83,7 +86,12 @@ class AtomicD1 {
   }
 }
 const actor: EditorialActor = { id: 'owner', workspaceId: 'workspace', roles: ['owner'] };
-function fixture(evidence = true, includeRevisionSchema = true, schemaVersion = 13) {
+function fixture(
+  evidence = true,
+  includeRevisionSchema = true,
+  schemaVersion = 13,
+  contextFixture = false,
+) {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys=ON');
   migrations
@@ -105,12 +113,12 @@ function fixture(evidence = true, includeRevisionSchema = true, schemaVersion = 
       ('critique','workspace','project','SCRIPT_CRITIQUE','critique-v1','approved','t','t',2,'owner','owner'),
       ('storyboard','workspace','project','STORYBOARD','storyboard-v1','active','t','t',2,'owner','owner');
     INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_text,content_json,source_type,content_hash,created_at,created_by) VALUES
-      ('research-v1','workspace','research',1,'de','research',NULL,'HUMAN_EDITED','${'1'.repeat(64)}','t','owner'),
-      ('idea-v1','workspace','idea',1,'de','idea',NULL,'HUMAN_EDITED','${'0'.repeat(64)}','t','owner'),
-      ('brief-v1','workspace','brief',1,'de',NULL,'{"researchVersionIds":["research-v1"]}','HUMAN_EDITED','${'2'.repeat(64)}','t','owner'),
-      ('script-v1','workspace','script',1,'de','script',NULL,'HUMAN_EDITED','${'3'.repeat(64)}','t','owner'),
-      ('critique-v1','workspace','critique',1,'de','critique',NULL,'HUMAN_EDITED','${'4'.repeat(64)}','t','owner'),
-      ('storyboard-v1','workspace','storyboard',1,'de','storyboard',NULL,'HUMAN_EDITED','${'5'.repeat(64)}','t','owner');
+      ('research-v1','workspace','research',1,'de','${contextFixture ? 'STALE_RESEARCH_V1_MARKER' : 'research'}',NULL,'HUMAN_EDITED','${'1'.repeat(64)}','t','owner'),
+      ('idea-v1','workspace','idea',1,'de','${contextFixture ? 'STALE_IDEA_MARKER' : 'idea'}',NULL,'HUMAN_EDITED','${'0'.repeat(64)}','t','owner'),
+      ('brief-v1','workspace','brief',1,'de',NULL,'${contextFixture ? '{"researchVersionIds":["research-v1"],"summary":"STALE_BRIEF_MARKER"}' : '{"researchVersionIds":["research-v1"]}'}','HUMAN_EDITED','${'2'.repeat(64)}','t','owner'),
+      ('script-v1','workspace','script',1,'de','${contextFixture ? 'STALE_SCRIPT_MARKER' : 'script'}',NULL,'HUMAN_EDITED','${'3'.repeat(64)}','t','owner'),
+      ('critique-v1','workspace','critique',1,'de','${contextFixture ? 'STALE_CRITIQUE_MARKER' : 'critique'}',NULL,'HUMAN_EDITED','${'4'.repeat(64)}','t','owner'),
+      ('storyboard-v1','workspace','storyboard',1,'de','${contextFixture ? 'STALE_STORYBOARD_MARKER' : 'storyboard'}',NULL,'HUMAN_EDITED','${'5'.repeat(64)}','t','owner');
     INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at) VALUES
       ('approve-research','workspace','research-v1','APPROVED','owner','owner','t'),
       ('approve-idea','workspace','idea-v1','APPROVED','owner','owner','t'),
@@ -130,6 +138,20 @@ function fixture(evidence = true, includeRevisionSchema = true, schemaVersion = 
     INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES('historical-terminal-audit','workspace','system',NULL,NULL,'intelligence.run_completed','intelligence_run','successful-storyboard-run','success','historical-request','test','{}','t','t');
     UPDATE intelligence_runs SET status='SUCCEEDED',terminal_audit_event_id='historical-terminal-audit',updated_at='t2',version=2 WHERE id='successful-storyboard-run';
   `);
+  if (contextFixture)
+    database.exec(`
+      UPDATE projects SET description='Stable documentary goal' WHERE id='project';
+      UPDATE content_brands SET niche='Technology history' WHERE id='brand';
+      UPDATE channel_profiles SET narrative_tone='Factual narration',editorial_strategy_json='{"audience":["Learners"],"reviewLanguage":"es"}' WHERE id='channel';
+      INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,current_version_id,status,created_at,updated_at,version,created_by,updated_by)
+        VALUES('translation','workspace','project','REVIEW_TRANSLATION','translation-v1','approved','t','t',2,'owner','owner');
+      INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_text,source_type,source_script_version_id,content_hash,created_at,created_by)
+        VALUES('translation-v1','workspace','translation',1,'es','STALE_TRANSLATION_MARKER','HUMAN_EDITED','script-v1','${'6'.repeat(64)}','t','owner');
+      INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at)
+        VALUES('approve-translation','workspace','translation-v1','APPROVED','owner','owner','t');
+      INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version)
+        VALUES('dep-st','workspace','script-v1','translation-v1','GENERATED_FROM','CURRENT','t','t',1);
+    `);
   if (evidence)
     database.exec(`
       INSERT INTO research_sources(id,workspace_id,research_version_id,source_type,title,source_reference,verification_status,created_at,created_by) VALUES('source-v1','workspace','research-v1','ARCHIVE','Source','reference','owner_approved','t','owner');
@@ -185,16 +207,28 @@ const importer = (d1: D1Database, selectedActor: EditorialActor = actor) =>
     requestId: 'import-request',
     environment: 'test',
   });
-async function open(schemaVersion = 13) {
-  const f = fixture(true, true, schemaVersion);
+async function open(schemaVersion = 13, contextFixture = false) {
+  const f = fixture(true, true, schemaVersion, contextFixture);
   const r = await service(f.d1).request('storyboard-v1', 'request-key', command);
   return { ...f, requestId: String(r.id) };
 }
 
 const migration14 = '0014_governed_idea_revision_capacity.sql';
-async function ready(include14 = true, historical = false) {
-  const f = await open();
-  const importedResult = await importer(f.d1).create(f.requestId, 'import-key', imported);
+async function ready(
+  include14 = true,
+  historical = false,
+  contextFixture = false,
+  researchSummary?: string,
+) {
+  const f = await open(13, contextFixture);
+  const importedResult = await importer(f.d1).create(f.requestId, 'import-key', {
+    ...imported,
+    summary:
+      researchSummary ??
+      (contextFixture
+        ? 'AUTHORITATIVE_RESEARCH_V2_MARKER: Ariane 5 Flight 501.'
+        : imported.summary),
+  });
   f.database
     .exec(`INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at) VALUES('approval-v2','workspace','${importedResult.versionId}','APPROVED','owner','owner','t');
  UPDATE editorial_artifacts SET status='approved',version=version+1 WHERE id='research';
@@ -2805,3 +2839,396 @@ it.each(['committed', 'unreadable'] as const)(
     f.database.close();
   },
 );
+
+describe('9DR-R1 Research-authoritative Idea revision context', () => {
+  it('dispatches once with only exact Research v2, preserves history and writes only v2 lineage', async () => {
+    const f = await ready(true, false, true);
+    const r = await capacity(f).authorize(f.requestId, 'context-capacity', f.command);
+    const adapter = providerDouble();
+    const before = counts(f.database);
+    const history = [
+      'projects',
+      'editorial_artifacts',
+      'editorial_artifact_versions',
+      'artifact_dependencies',
+      'artifact_approvals',
+      'idea_candidates',
+      'editorial_revision_requests',
+    ].map((table) => ({
+      table,
+      rows: f.database.prepare(`SELECT * FROM ${table} ORDER BY id`).all(),
+    }));
+    expect(
+      f.database
+        .prepare("SELECT validity_status FROM artifact_dependencies WHERE id='dep-rb'")
+        .get(),
+    ).toEqual({ validity_status: 'STALE' });
+    const prepared = vi.spyOn(f.d1, 'prepare');
+    try {
+      const result = await executor(f).execute(
+        'project',
+        'IDEA_GENERATION',
+        executionCommand(r),
+        'context-execution',
+      );
+      expect(result.run.status).toBe('SUCCEEDED');
+      expect(adapter).toHaveBeenCalledTimes(1);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      const request = adapter.mock.calls[0]![0];
+      expect(request.input).toEqual({});
+      expect(request.instructions).toContain(
+        'AUTHORITATIVE_RESEARCH_V2_MARKER: Ariane 5 Flight 501.',
+      );
+      for (const marker of [
+        'STALE_RESEARCH_V1_MARKER',
+        'STALE_IDEA_MARKER',
+        'STALE_BRIEF_MARKER',
+        'STALE_SCRIPT_MARKER',
+        'STALE_TRANSLATION_MARKER',
+        'STALE_CRITIQUE_MARKER',
+        'STALE_STORYBOARD_MARKER',
+        'research-v1',
+      ])
+        expect(request.instructions).not.toContain(marker);
+      const context = JSON.parse(
+        request.instructions.slice(request.instructions.indexOf('Context: ') + 9),
+      ) as Record<string, unknown>;
+      expect(context).toMatchObject({
+        id: 'project',
+        title: 'Project',
+        description: 'Stable documentary goal',
+        format: 'SHORT',
+        operatingMode: 'ASSISTED',
+        primaryLanguage: 'de',
+        brandName: 'Brand',
+        niche: 'Technology history',
+        channelName: 'Channel',
+        narrativeTone: 'Factual narration',
+        editorialStrategyJson: '{"audience":["Learners"],"reviewLanguage":"es"}',
+        reviewLocale: 'es',
+        exactSource: null,
+        storyboardSourceSegments: [],
+        lineage: [{ sourceVersionId: r.researchVersionId, dependencyType: 'GENERATED_FROM' }],
+        approvedArtifacts: [
+          {
+            artifactType: 'RESEARCH',
+            versionId: r.researchVersionId,
+            languageCode: 'de',
+            contentJson: '{"summary":"AUTHORITATIVE_RESEARCH_V2_MARKER: Ariane 5 Flight 501."}',
+          },
+        ],
+      });
+      expect(context.approvedArtifacts).toHaveLength(1);
+      expect(prepared.mock.calls.some(([sql]) => sql.includes('ORDER BY a.artifact_type'))).toBe(
+        false,
+      );
+      expect(request).toMatchObject({
+        modelKey: 'gpt-5.6-terra',
+        promptVersionId: 'prompt_version_idea_generation_v1',
+        maxOutputTokens: 8000,
+        timeoutMs: 90000,
+        reasoningEffort: 'medium',
+      });
+      expect(counts(f.database).map((n, i) => n - before[i]!)).toEqual([0, 0, 1, 0, 1, 1, 1]);
+      const reservation = f.database
+        .prepare(
+          'SELECT envelope_id,project_execution_budget_id,status,reserved_microusd,actual_microusd,dispatched_at FROM editorial_execution_reservations WHERE intelligence_run_id=?',
+        )
+        .get(String(result.run.id));
+      expect(reservation).toMatchObject({
+        envelope_id: r.envelopeId,
+        project_execution_budget_id: r.budgetId,
+        status: 'RECONCILED',
+        reserved_microusd: 177920,
+        actual_microusd: 261,
+      });
+      expect(reservation?.dispatched_at).toBeTypeOf('string');
+      expect(
+        f.database
+          .prepare('SELECT status FROM editorial_execution_envelopes WHERE id=?')
+          .get(r.envelopeId),
+      ).toEqual({ status: 'CONSUMED' });
+      expect(
+        f.database
+          .prepare(
+            'SELECT source_artifact_version_id,dependency_type,validity_status FROM artifact_dependencies WHERE dependent_artifact_version_id=?',
+          )
+          .all(String(result.run.outputArtifactVersionId)),
+      ).toEqual([
+        {
+          source_artifact_version_id: r.researchVersionId,
+          dependency_type: 'GENERATED_FROM',
+          validity_status: 'CURRENT',
+        },
+      ]);
+      expect(
+        f.database
+          .prepare('SELECT status FROM idea_candidates WHERE artifact_version_id=?')
+          .get(String(result.run.outputArtifactVersionId)),
+      ).toEqual({ status: 'CANDIDATE' });
+      expect(
+        f.database
+          .prepare('SELECT count(*) n FROM artifact_approvals WHERE artifact_version_id=?')
+          .get(String(result.run.outputArtifactVersionId)),
+      ).toEqual({ n: 0 });
+      expect(count(f.database, 'editorial_revision_request_resolutions')).toBe(0);
+      for (const { table, rows } of history)
+        for (const row of rows)
+          expect(f.database.prepare(`SELECT * FROM ${table} WHERE id=?`).get(row.id!)).toEqual(row);
+      expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      f.database.close();
+    }
+  });
+
+  it('leaves ordinary Idea context unchanged without the revision-capacity selector', async () => {
+    const f = await ready(true, false, true);
+    const adapter = providerDouble();
+    try {
+      const ex = executor(f) as unknown as {
+        projectContext(
+          projectId: string,
+          task: string,
+          inputVersionId: string,
+        ): Promise<Record<string, unknown>>;
+      };
+      const context = await ex.projectContext(
+        'project',
+        'IDEA_GENERATION',
+        f.command.expectedResearchVersionId,
+      );
+      const serialized = JSON.stringify(context);
+      expect(serialized).toContain('AUTHORITATIVE_RESEARCH_V2_MARKER');
+      expect(serialized).toContain('STALE_BRIEF_MARKER');
+      expect(serialized).toContain('STALE_IDEA_MARKER');
+      expect(context.approvedArtifacts).toHaveLength(6);
+      expect(adapter).not.toHaveBeenCalled();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      f.database.close();
+    }
+  });
+
+  it.each([
+    'unapproved',
+    'superseded',
+    'approval-mismatch',
+    'multiple-approvals',
+    'wrong-input',
+    'source-absent',
+    'source-empty',
+    'source-malformed',
+    'source-race',
+    'unrendered-context',
+  ])('fails before reservation and provider for unsafe authoritative context: %s', async (kind) => {
+    const f = await ready(true, false, true);
+    const r = await capacity(f).authorize(f.requestId, 'unsafe-capacity', f.command);
+    const adapter = providerDouble();
+    const command = executionCommand(r);
+    if (kind === 'unapproved')
+      f.database.exec(
+        "UPDATE editorial_artifacts SET status='active',version=version+1 WHERE id='research'",
+      );
+    if (kind === 'superseded')
+      f.database.exec(
+        "UPDATE editorial_artifacts SET current_version_id='research-v1',version=version+1 WHERE id='research'",
+      );
+    if (kind === 'approval-mismatch')
+      f.database
+        .prepare(
+          "INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at) VALUES('reject-v2','workspace',?,'REJECTED','owner','owner','t')",
+        )
+        .run(r.researchVersionId);
+    if (kind === 'multiple-approvals') await secondResearchApproval(f);
+    if (kind === 'wrong-input') command.inputArtifactVersionId = 'research-v1';
+
+    const prepare = f.d1.prepare.bind(f.d1);
+    let faultInjected = false;
+    f.d1.prepare = (sql) => {
+      const sourceRead = sql.startsWith('SELECT v.id versionId,a.id artifactId,a.artifact_type');
+      const promptRead = sql.startsWith('SELECT pv.id,pv.template_text');
+      if (sourceRead && kind === 'source-race') {
+        faultInjected = true;
+        f.database.exec(
+          "UPDATE editorial_artifacts SET current_version_id='research-v1',version=version+1 WHERE id='research'",
+        );
+      }
+      const statement = prepare(sql);
+      // Model an unavailable/corrupt read without altering immutable source rows.
+      if (
+        (sourceRead && ['source-absent', 'source-empty', 'source-malformed'].includes(kind)) ||
+        (promptRead && kind === 'unrendered-context')
+      ) {
+        const first = statement.first.bind(statement);
+        statement.first = async <T>() => {
+          faultInjected = true;
+          const row = await first<Record<string, unknown>>();
+          if (kind === 'source-absent') return null;
+          if (kind === 'unrendered-context')
+            return { ...row, templateText: 'No authoritative context rendered.' } as T;
+          return {
+            ...row,
+            contentText: null,
+            contentJson: kind === 'source-empty' ? '{}' : '{invalid',
+          } as T;
+        };
+      }
+      return statement;
+    };
+    const before = counts(f.database);
+    const ideasBefore = count(f.database, 'idea_candidates');
+    try {
+      await expect(
+        executor(f).execute('project', 'IDEA_GENERATION', command, 'unsafe-context'),
+      ).rejects.toThrow(
+        /idea_revision_(execution_binding_invalid|context_unavailable)|Exact approved current RESEARCH input/,
+      );
+      if (kind.startsWith('source-') || kind === 'unrendered-context')
+        expect(faultInjected).toBe(true);
+      expect(adapter).not.toHaveBeenCalled();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(counts(f.database)).toEqual(before);
+      expect(count(f.database, 'idea_candidates')).toBe(ideasBefore);
+      expect(
+        f.database
+          .prepare('SELECT count(*) n FROM intelligence_runs WHERE idempotency_key=?')
+          .get('unsafe-context'),
+      ).toEqual({ n: 0 });
+      expect(
+        f.database
+          .prepare('SELECT count(*) n FROM editorial_execution_reservations WHERE envelope_id=?')
+          .get(r.envelopeId),
+      ).toEqual({ n: 0 });
+      expect(
+        f.database
+          .prepare('SELECT status FROM editorial_execution_envelopes WHERE id=?')
+          .get(r.envelopeId),
+      ).toEqual({ status: 'ACTIVE' });
+      expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      f.database.close();
+    }
+  });
+});
+
+describe('9DR-R2A literal-safe Research rendering', () => {
+  const difficultSource = [
+    'Backslashes: C:\\research\\source\\file.txt',
+    'Double quotes: "approved source"',
+    'Newlines:\nfirst line\nsecond line',
+    'Unicode: español, investigación, für Größe, Straße, 😀🚀',
+    'JSON-looking: {"summary":"$&","path":"C:\\notes"}',
+    'Literal source placeholder: {{context_json}}',
+    'Combined: $$ $& $' + String.fromCharCode(96) + " $' $1 $2 $<name>",
+  ].join('\n');
+  const sources = ['$&', '$$', '$' + String.fromCharCode(96), "$'", '$1', '$2', '$<name>'].map(
+    (token) => 'literal ' + token + ' diagnostic token.',
+  );
+
+  it.each([...sources, difficultSource])(
+    'preserves approved Research literally through the actual capacity selector: %s',
+    async (sourceText) => {
+      const f = await ready(true, false, true, sourceText);
+      const r = await capacity(f).authorize(f.requestId, 'literal-capacity', f.command);
+      const adapter = providerDouble();
+      const sourceRow = () =>
+        f.database
+          .prepare('SELECT * FROM editorial_artifact_versions WHERE id=?')
+          .get(r.researchVersionId);
+      const persisted = sourceRow();
+      expect(JSON.parse(String(persisted?.content_json))).toEqual({ summary: sourceText });
+      try {
+        const result = await executor(f).execute(
+          'project',
+          'IDEA_GENERATION',
+          executionCommand(r),
+          'literal-execution',
+        );
+        expect(result.run.status).toBe('SUCCEEDED');
+        expect(adapter).toHaveBeenCalledTimes(1);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        const request = adapter.mock.calls[0]![0];
+        const rendered = JSON.parse(
+          request.instructions.slice(request.instructions.indexOf('Context: ') + 9),
+        ) as {
+          approvedArtifacts: { versionId: string; contentJson: string }[];
+        };
+        expect(rendered.approvedArtifacts).toHaveLength(1);
+        expect(rendered.approvedArtifacts[0]!.versionId).toBe(r.researchVersionId);
+        expect(rendered.approvedArtifacts[0]!.contentJson).toBe(persisted?.content_json);
+        expect(JSON.parse(rendered.approvedArtifacts[0]!.contentJson)).toEqual({
+          summary: sourceText,
+        });
+        for (const marker of [
+          'STALE_RESEARCH_V1_MARKER',
+          'STALE_IDEA_MARKER',
+          'STALE_BRIEF_MARKER',
+          'STALE_SCRIPT_MARKER',
+          'STALE_TRANSLATION_MARKER',
+          'STALE_CRITIQUE_MARKER',
+          'STALE_STORYBOARD_MARKER',
+        ])
+          expect(request.instructions).not.toContain(marker);
+        expect(request.input).toEqual({});
+        expect(request.promptVersionId).toBe('prompt_version_idea_generation_v1');
+        expect(sourceRow()).toEqual(persisted);
+        expect(
+          f.database
+            .prepare(
+              'SELECT source_artifact_version_id,dependency_type,validity_status FROM artifact_dependencies WHERE dependent_artifact_version_id=?',
+            )
+            .all(String(result.run.outputArtifactVersionId)),
+        ).toEqual([
+          {
+            source_artifact_version_id: r.researchVersionId,
+            dependency_type: 'GENERATED_FROM',
+            validity_status: 'CURRENT',
+          },
+        ]);
+        expect(
+          f.database
+            .prepare('SELECT status FROM idea_candidates WHERE artifact_version_id=?')
+            .get(String(result.run.outputArtifactVersionId)),
+        ).toEqual({ status: 'CANDIDATE' });
+        expect(
+          f.database
+            .prepare('SELECT count(*) n FROM artifact_approvals WHERE artifact_version_id=?')
+            .get(String(result.run.outputArtifactVersionId)),
+        ).toEqual({ n: 0 });
+        expect(count(f.database, 'editorial_revision_request_resolutions')).toBe(0);
+        expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      } finally {
+        f.database.close();
+      }
+    },
+  );
+
+  it('renders every placeholder literally without recursively rendering source placeholders', () => {
+    const context = { source: difficultSource, markers: sources };
+    const template = 'FIRST\n{{context_json}}\nSECOND\n{{context_json}}\nEND';
+    const material = providerBoundRequestMaterial(template, context, {}, { type: 'object' });
+    const expected = JSON.stringify(context);
+    expect(material.instructions).toBe('FIRST\n' + expected + '\nSECOND\n' + expected + '\nEND');
+    const first = material.instructions.slice(
+      'FIRST\n'.length,
+      material.instructions.indexOf('\nSECOND\n'),
+    );
+    const second = material.instructions.slice(
+      material.instructions.indexOf('\nSECOND\n') + '\nSECOND\n'.length,
+      -'\nEND'.length,
+    );
+    expect(JSON.parse(first)).toEqual(context);
+    expect(JSON.parse(second)).toEqual(context);
+  });
+
+  it('keeps unsupported template variables fail-closed', () => {
+    expect(() =>
+      providerBoundRequestMaterial(
+        '{{context_json}} {{unsupported_payload}}',
+        { source: difficultSource },
+        {},
+        { type: 'object' },
+      ),
+    ).toThrow('Prompt contains an unsupported variable.');
+  });
+});
