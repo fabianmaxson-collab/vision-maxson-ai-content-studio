@@ -1,4 +1,11 @@
 import {
+  loadIdeaRevisionCapacity,
+  authorizeIdeaRevisionDispatch,
+  IdeaCapacityError,
+  IdeaDispatchError,
+} from './idea-revision-capacity';
+import { ideaRevisionPolicy } from '@vision-maxson/providers/execution-profile';
+import {
   contentBriefSchema,
   ideaGenerationOutputSchema,
   productionScriptOutputSchema,
@@ -58,6 +65,7 @@ type Command = {
   inputArtifactVersionId: string | null;
   creativeRegeneration: boolean;
   remediationId?: string;
+  ideaRevisionCapacityId?: string;
 };
 type Row = Record<string, unknown>;
 type LineageEdge = {
@@ -278,7 +286,11 @@ function validateSemantics(
 function safeError(error: unknown) {
   return error instanceof ProviderError
     ? error
-    : new ProviderError('PERMANENT', false, 'AI execution failed.');
+    : new ProviderError(
+        'PERMANENT',
+        false,
+        error instanceof IdeaCapacityError ? error.message : 'AI execution failed.',
+      );
 }
 
 const VALIDATION_ISSUE_LIMIT = 8;
@@ -369,6 +381,25 @@ export class EditorialExecutionService {
         false,
         'Terminal pipeline schema capability is unavailable.',
       );
+    if (
+      command.ideaRevisionCapacityId &&
+      (task !== 'IDEA_GENERATION' ||
+        command.remediationId ||
+        command.mode !== 'LOCKED' ||
+        command.preferredProviderKey !== 'openai' ||
+        command.preferredModelKey !== 'gpt-5.6-terra' ||
+        command.creativeRegeneration)
+    )
+      throw new ProviderError('PERMANENT', false, 'Invalid Idea revision execution policy.');
+    const ideaCapacity = command.ideaRevisionCapacityId
+      ? await loadIdeaRevisionCapacity(
+          this.db,
+          this.actor,
+          projectId,
+          command.ideaRevisionCapacityId,
+          command.inputArtifactVersionId,
+        )
+      : null;
     if (command.remediationId && task !== 'STORYBOARD_PLANNER')
       throw new ProviderError(
         'PERMANENT',
@@ -395,9 +426,13 @@ export class EditorialExecutionService {
       );
     const prompt = await this.db
       .prepare(
-        `SELECT pv.id,pv.template_text AS templateText,pv.input_schema_version AS inputSchemaVersion,pv.output_schema_version AS outputSchemaVersion,pd.key FROM prompt_versions pv JOIN prompt_definitions pd ON pd.id=pv.prompt_definition_id WHERE pd.key=? AND pd.status='active' AND pv.status='active' ORDER BY pv.version_number DESC LIMIT 1`,
+        `SELECT pv.id,pv.template_text AS templateText,pv.input_schema_version AS inputSchemaVersion,pv.output_schema_version AS outputSchemaVersion,pd.key FROM prompt_versions pv JOIN prompt_definitions pd ON pd.id=pv.prompt_definition_id WHERE pd.key=? AND (? IS NULL OR pv.id=?) AND pd.status='active' AND pv.status='active' ORDER BY pv.version_number DESC LIMIT 1`,
       )
-      .bind(promptKey[task])
+      .bind(
+        promptKey[task],
+        ideaCapacity?.prompt_version_id ?? null,
+        ideaCapacity?.prompt_version_id ?? null,
+      )
       .first<{
         id: string;
         templateText: string;
@@ -422,6 +457,12 @@ export class EditorialExecutionService {
         `SELECT p.id AS providerId,p.key AS providerKey,m.id AS modelId,m.model_key AS modelKey,m.capabilities_json AS capabilitiesJson,m.status,ps.id AS pricingSnapshotId,ps.input_unit_price AS inputPrice,ps.output_unit_price AS outputPrice,ps.currency,ps.unit_name AS unitName,ps.verification_status AS verificationStatus,ps.effective_from AS effectiveFrom,ps.effective_to AS effectiveTo FROM ai_providers p JOIN ai_provider_models m ON m.provider_id=p.id LEFT JOIN ai_pricing_snapshots ps ON ps.provider_model_id=m.id AND ps.effective_to IS NULL WHERE p.status='configured' AND m.status='available'`,
       )
       .all<Row>();
+    if (ideaCapacity)
+      modelRows.results = modelRows.results.filter(
+        (row) =>
+          row.modelId === ideaCapacity.provider_model_id &&
+          row.pricingSnapshotId === ideaCapacity.pricing_snapshot_id,
+      );
     const candidates = modelRows.results.map((row) => {
       const cfg = parseCapabilities(row.capabilitiesJson);
       return {
@@ -471,11 +512,13 @@ export class EditorialExecutionService {
         'Creative regeneration is not allowed by the execution profile.',
       );
     const governedStage = isGovernedTerminalStage(task);
-    const stepPolicy = boundedStep
-      ? boundedProfile.steps[task]
-      : governedStage
-        ? { ...policy, ...governedTerminalStagePolicies[task] }
-        : policy;
+    const stepPolicy = ideaCapacity
+      ? { ...policy, ...ideaRevisionPolicy }
+      : boundedStep
+        ? boundedProfile.steps[task]
+        : governedStage
+          ? { ...policy, ...governedTerminalStagePolicies[task] }
+          : policy;
     const providerInput = boundedStep
       ? task === 'REVIEW_TRANSLATION_ES'
         ? reviewTranslationProviderContext(project, boundedProfile)
@@ -502,20 +545,22 @@ export class EditorialExecutionService {
         false,
         'Provider-bound input exceeds the execution profile ceiling.',
       );
-    const envelope = boundedStep
-      ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected, boundedProfile)
-      : governedStage
-        ? command.remediationId
-          ? await loadGovernedRemediationEnvelope(
-              this.db,
-              this.actor,
-              projectId,
-              task,
-              selected,
-              command.remediationId,
-            )
-          : await loadGovernedTerminalEnvelope(this.db, this.actor, projectId, task, selected)
-        : null;
+    const envelope =
+      ideaCapacity ??
+      (boundedStep
+        ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected, boundedProfile)
+        : governedStage
+          ? command.remediationId
+            ? await loadGovernedRemediationEnvelope(
+                this.db,
+                this.actor,
+                projectId,
+                task,
+                selected,
+                command.remediationId,
+              )
+            : await loadGovernedTerminalEnvelope(this.db, this.actor, projectId, task, selected)
+          : null);
     const reservedMicrousd = boundedStep
       ? calculateReservation(selectedRow, task, boundedProfile)
       : governedStage
@@ -541,7 +586,17 @@ export class EditorialExecutionService {
         String(project.operatingMode),
         idempotencyKey,
         regeneration,
-        JSON.stringify({ commandHash }),
+        JSON.stringify({
+          commandHash,
+          ...(ideaCapacity
+            ? {
+                ideaRevisionCapacityId: command.ideaRevisionCapacityId,
+                ...(ideaCapacity.recoveryId
+                  ? { ideaRevisionRecoveryId: ideaCapacity.recoveryId }
+                  : {}),
+              }
+            : {}),
+        }),
         selectedRow.pricingSnapshotId ?? null,
         at,
         at,
@@ -607,40 +662,54 @@ export class EditorialExecutionService {
         }
       | undefined;
     let validationDiagnostic: ReturnType<typeof sanitizeValidationIssues> | undefined;
-    const observer = this.observer(runId, async (result) => {
-      const costs = this.cost(result, selectedRow);
-      const metadata = {
-        commandHash,
-        ...result.safeMetadata,
-        cachedInputUnits: result.usage.cachedInputUnits,
-        reasoningOutputUnits: result.usage.reasoningOutputUnits,
-      };
-      const actualMicrousd =
-        costs.actualCost === null ? null : Math.ceil(costs.actualCost * 1_000_000);
-      providerCompletion = { result, costs, metadata, actualMicrousd };
-      const completedAt = now();
-      await this.db.batch([
-        this.db
-          .prepare(
-            `UPDATE intelligence_run_attempts SET provider_request_id=?,safe_metadata_json=? WHERE intelligence_run_id=? AND status='RUNNING'`,
-          )
-          .bind(result.providerRequestId, JSON.stringify(metadata), runId),
-        this.db
-          .prepare(
-            `UPDATE intelligence_runs SET input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,updated_at=? WHERE id=? AND workspace_id=? AND status='RUNNING'`,
-          )
-          .bind(
-            result.usage.inputUnits,
-            result.usage.outputUnits,
-            costs.actualCost,
-            costs.currency,
-            JSON.stringify(metadata),
-            completedAt,
-            runId,
-            this.actor.workspaceId,
-          ),
-      ]);
-    });
+    const observer = this.observer(
+      runId,
+      async (result) => {
+        const costs = this.cost(result, selectedRow);
+        const metadata = {
+          commandHash,
+          ...result.safeMetadata,
+          cachedInputUnits: result.usage.cachedInputUnits,
+          reasoningOutputUnits: result.usage.reasoningOutputUnits,
+        };
+        const actualMicrousd =
+          costs.actualCost === null ? null : Math.ceil(costs.actualCost * 1_000_000);
+        providerCompletion = { result, costs, metadata, actualMicrousd };
+        const completedAt = now();
+        await this.db.batch([
+          this.db
+            .prepare(
+              `UPDATE intelligence_run_attempts SET provider_request_id=?,safe_metadata_json=? WHERE intelligence_run_id=? AND status='RUNNING'`,
+            )
+            .bind(result.providerRequestId, JSON.stringify(metadata), runId),
+          this.db
+            .prepare(
+              `UPDATE intelligence_runs SET input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,updated_at=? WHERE id=? AND workspace_id=? AND status='RUNNING'`,
+            )
+            .bind(
+              result.usage.inputUnits,
+              result.usage.outputUnits,
+              costs.actualCost,
+              costs.currency,
+              JSON.stringify(metadata),
+              completedAt,
+              runId,
+              this.actor.workspaceId,
+            ),
+        ]);
+      },
+      ideaCapacity
+        ? async () => {
+            await authorizeIdeaRevisionDispatch(
+              this.db,
+              this.actor,
+              projectId,
+              command.ideaRevisionCapacityId!,
+              runId,
+            );
+          }
+        : undefined,
+    );
     const started = Date.now();
     try {
       const result = await new AIExecutionGateway(new Map([['openai', adapter]])).execute<
@@ -719,6 +788,9 @@ export class EditorialExecutionService {
         idempotentReplay: false,
       };
     } catch (error) {
+      const dispatchFailure = error instanceof IdeaDispatchError ? error : null;
+      const undispatchedIdea =
+        ideaCapacity !== null && dispatchFailure?.dispatchOutcome === 'NOT_COMMITTED';
       const mapped = safeError(error);
       const terminalAt = now();
       const auditId = newId('audit');
@@ -726,6 +798,29 @@ export class EditorialExecutionService {
       const failureMetadata = {
         ...(providerCompletion?.metadata ?? { commandHash }),
         ...(validationDiagnostic ? { validationDiagnostic } : {}),
+        ...(dispatchFailure && dispatchFailure.rejection !== 'ELIGIBILITY_REJECTED'
+          ? {
+              dispatchAuthorizationOutcome: dispatchFailure.dispatchOutcome,
+              providerAdapterInvoked: false,
+              ideaRevisionCapacityId: command.ideaRevisionCapacityId,
+              ...(ideaCapacity?.recoveryId
+                ? { ideaRevisionRecoveryId: ideaCapacity.recoveryId }
+                : {}),
+            }
+          : {}),
+        ...(undispatchedIdea
+          ? {
+              dispatchAuthorized: false,
+              providerCalls: 0,
+              ideaRevisionCapacityId: command.ideaRevisionCapacityId,
+              ...(ideaCapacity?.recoveryId
+                ? { ideaRevisionRecoveryId: ideaCapacity.recoveryId }
+                : {}),
+              ...(dispatchFailure?.rejection === 'ELIGIBILITY_REJECTED'
+                ? { preDispatchFailure: 'ELIGIBILITY_REJECTED' }
+                : {}),
+            }
+          : {}),
       };
       const knownActualMicrousd = providerCompletion?.actualMicrousd ?? null;
       const reconciledKnownCost =
@@ -746,19 +841,36 @@ export class EditorialExecutionService {
             runId,
           ),
       ];
+      // Unknown authorization must retain exposure. Schema 0004 does not permit
+      // RESERVED -> AMBIGUOUS: leave that reservation held for investigation.
+      // Only a durable DISPATCHED reservation may enter AMBIGUOUS here.
+      const reservationFailureScope = dispatchFailure
+        ? undispatchedIdea
+          ? "status='RESERVED' AND dispatched_at IS NULL"
+          : "status='DISPATCHED'"
+        : "status IN ('RESERVED','DISPATCHED')";
       if (boundedStep || governedStage)
         statements.push(
           this.db
             .prepare(
-              `UPDATE editorial_execution_reservations SET status=?,actual_microusd=?,reconciled_at=? WHERE intelligence_run_id=? AND status IN ('RESERVED','DISPATCHED')`,
+              `UPDATE editorial_execution_reservations SET status=?,actual_microusd=?,reconciled_at=? WHERE intelligence_run_id=? AND ${reservationFailureScope}`,
             )
             .bind(
-              reconciledKnownCost ? 'RECONCILED' : 'AMBIGUOUS',
-              reconciledKnownCost ? knownActualMicrousd : null,
+              undispatchedIdea ? 'CANCELLED' : reconciledKnownCost ? 'RECONCILED' : 'AMBIGUOUS',
+              undispatchedIdea ? 0 : reconciledKnownCost ? knownActualMicrousd : null,
               terminalAt,
               runId,
             ),
         );
+      // Do not turn a stale non-commit observation into durable zero-cost proof.
+      // A late commit before this terminal batch must roll back the whole batch.
+      const zeroDispatchGuard = undispatchedIdea
+        ? `id=CASE WHEN started_at IS NULL
+            AND NOT EXISTS(SELECT 1 FROM intelligence_run_attempts a WHERE a.intelligence_run_id=intelligence_runs.id)
+            AND EXISTS(SELECT 1 FROM editorial_execution_reservations r WHERE r.intelligence_run_id=intelligence_runs.id
+              AND r.status='CANCELLED' AND r.actual_microusd=0 AND r.dispatched_at IS NULL)
+            THEN id ELSE NULL END,`
+        : '';
       statements.push(
         this.terminalAuditStatement(
           auditId,
@@ -769,16 +881,16 @@ export class EditorialExecutionService {
         ),
         this.db
           .prepare(
-            `UPDATE intelligence_runs SET status=?,error_category=?,safe_error_detail=?,input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,terminal_audit_event_id=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
+            `UPDATE intelligence_runs SET ${zeroDispatchGuard}status=?,error_category=?,safe_error_detail=?,input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,terminal_audit_event_id=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
           )
           .bind(
             terminalStatus,
             mapped.category,
             mapped.message,
-            providerCompletion?.result.usage.inputUnits ?? null,
-            providerCompletion?.result.usage.outputUnits ?? null,
-            providerCompletion?.costs.actualCost ?? null,
-            providerCompletion?.costs.currency ?? null,
+            undispatchedIdea ? 0 : (providerCompletion?.result.usage.inputUnits ?? null),
+            undispatchedIdea ? 0 : (providerCompletion?.result.usage.outputUnits ?? null),
+            undispatchedIdea ? 0 : (providerCompletion?.costs.actualCost ?? null),
+            undispatchedIdea ? 'USD' : (providerCompletion?.costs.currency ?? null),
             JSON.stringify(failureMetadata),
             auditId,
             terminalAt,
@@ -787,7 +899,13 @@ export class EditorialExecutionService {
             this.actor.workspaceId,
           ),
       );
-      await this.db.batch(statements);
+      try {
+        await this.db.batch(statements);
+      } catch (terminalError) {
+        if (dispatchFailure) throw new IdeaDispatchError('AMBIGUOUS');
+        throw terminalError;
+      }
+      if (error instanceof IdeaCapacityError) throw error;
       throw mapped;
     }
   }
@@ -1046,9 +1164,14 @@ export class EditorialExecutionService {
     runId: string,
     onProviderSucceeded: (result: ProviderExecutionResult) => Promise<void> = () =>
       Promise.resolve(),
+    authorizeDispatch?: () => Promise<void>,
   ) {
     return {
       started: async (attempt: number) => {
+        if (authorizeDispatch) {
+          await authorizeDispatch();
+          return;
+        }
         const at = now();
         await this.db.batch([
           this.db

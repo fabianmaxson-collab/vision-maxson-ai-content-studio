@@ -1,3 +1,4 @@
+import { EditorialExecutionService } from '../src/editorial/execution';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { governedTerminalBudgetSchema } from '@vision-maxson/contracts';
@@ -133,5 +134,58 @@ describe('governed terminal execution', () => {
     expect(execution).toContain("generation_readiness='NOT_READY'");
     expect(preflight).toContain('evaluateTerminalGraph(g)');
     expect(execution).toContain('Preflight is deterministic and cannot use a provider.');
+  });
+});
+
+describe('Idea selector execution fail-closed', () => {
+  const command = {
+    mode: 'LOCKED' as const,
+    preferredProviderKey: 'openai',
+    preferredModelKey: 'gpt-5.6-terra',
+    inputArtifactVersionId: 'research-v2',
+    creativeRegeneration: false,
+    ideaRevisionCapacityId: 'capacity',
+  };
+  function db() {
+    return {
+      prepare(sql: string) {
+        return {
+          bind() {
+            return this;
+          },
+          first() {
+            if (sql.includes('pragma_table_info')) return Promise.resolve({ count: 1 });
+            if (sql.includes('sqlite_master')) return Promise.resolve({ n: 0 });
+            return Promise.resolve(null);
+          },
+        };
+      },
+    } as unknown as D1Database;
+  }
+  it.each(['TOPIC_RESEARCH', 'STORYBOARD_PLANNER', 'CONTENT_BRIEF'] as const)(
+    'rejects selector on %s before provider configuration',
+    async (task) => {
+      const service = new EditorialExecutionService(
+        db(),
+        { id: 'owner', workspaceId: 'workspace', roles: ['owner'] },
+        { openAIEnabled: false, openAIBaseUrl: 'https://invalid.test' },
+      );
+      await expect(service.execute('project', task, command, 'key')).rejects.toThrow(
+        'Invalid Idea revision execution policy',
+      );
+    },
+  );
+  it('rejects schema 0013 and mixed selectors before persistence', async () => {
+    const service = new EditorialExecutionService(
+      db(),
+      { id: 'owner', workspaceId: 'workspace', roles: ['owner'] },
+      { openAIEnabled: false, openAIBaseUrl: 'https://invalid.test' },
+    );
+    await expect(service.execute('project', 'IDEA_GENERATION', command, 'key')).rejects.toThrow(
+      'schema_unavailable',
+    );
+    await expect(
+      service.execute('project', 'IDEA_GENERATION', { ...command, remediationId: 'other' }, 'key'),
+    ).rejects.toThrow('Invalid Idea revision execution policy');
   });
 });

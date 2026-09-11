@@ -469,9 +469,20 @@ export const intelligenceCommandSchema = z
     inputArtifactVersionId: id.nullable().default(null),
     creativeRegeneration: z.boolean().default(false),
     remediationId: id.optional(),
+    ideaRevisionCapacityId: id.optional(),
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.ideaRevisionCapacityId &&
+      (value.remediationId ||
+        value.mode !== 'LOCKED' ||
+        value.preferredProviderKey !== 'openai' ||
+        value.preferredModelKey !== 'gpt-5.6-terra' ||
+        !value.inputArtifactVersionId ||
+        value.creativeRegeneration)
+    )
+      context.addIssue({ code: 'custom', message: 'Invalid Idea revision execution policy' });
     if (value.mode === 'LOCKED' && (!value.preferredProviderKey || !value.preferredModelKey))
       context.addIssue({ code: 'custom', message: 'LOCKED requires provider and model' });
   });
@@ -631,3 +642,64 @@ export const terminalGraphSnapshotSchema = z
   })
   .strict();
 export type TerminalGraphSnapshotContract = z.infer<typeof terminalGraphSnapshotSchema>;
+
+export const ideaRevisionCapacitySchema = z
+  .object({
+    expectedResearchVersionId: id,
+    expectedResearchArtifactRevision: z.number().int().positive().safe(),
+    expectedResearchApprovalId: id,
+    expectedProjectVersion: z.number().int().positive().safe(),
+  })
+  .strict();
+export type IdeaRevisionCapacityCommand = z.infer<typeof ideaRevisionCapacitySchema>;
+export const ideaRevisionRecoverySchema = z
+  .object({
+    expectedFailedRunId: id.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{2,99}$/u),
+    expectedFailedReservationId: id.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{2,99}$/u),
+    expectedProjectVersion: z.number().int().positive().safe(),
+  })
+  .strict();
+export type IdeaRevisionRecoveryCommand = z.infer<typeof ideaRevisionRecoverySchema>;
+export const ideaRevisionCapacityResultSchema = z
+  .object({
+    capacityId: id,
+    projectId: id,
+    revisionRequestId: id,
+    researchArtifactId: id,
+    researchVersionId: id,
+    researchApprovalId: id,
+    budgetId: id,
+    envelopeId: id,
+    auditEventId: id,
+    profileKey: z.literal('phase3_idea_revision_v1'),
+    profileVersion: z.literal(1),
+    stageKey: z.literal('IDEA_GENERATION'),
+    monetaryCeilingMicrousd: z.literal(177920),
+    maximumCalls: z.literal(1),
+  })
+  .strict();
+
+export const ideaRevisionRecoveryResultSchema = z
+  .object({
+    recoveryId: id,
+    capacityId: id,
+    projectId: id,
+    revisionRequestId: id,
+    researchArtifactId: id,
+    researchVersionId: id,
+    researchApprovalId: id,
+    budgetId: id,
+    originalEnvelopeId: id,
+    failedReservationId: id,
+    failedRunId: id,
+    replacementEnvelopeId: id,
+    originalProjectVersion: z.number().int().positive().safe(),
+    recoveryProjectVersion: z.number().int().positive().safe(),
+    auditEventId: id,
+    profileKey: z.literal('phase3_idea_revision_v1'),
+    profileVersion: z.literal(1),
+    stageKey: z.literal('IDEA_GENERATION'),
+    monetaryCeilingMicrousd: z.literal(177920),
+    maximumCalls: z.literal(1),
+  })
+  .strict();

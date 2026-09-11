@@ -209,3 +209,27 @@ export function reserveMicrousd(
       1_000_000,
   );
 }
+
+export const ideaRevisionPolicy = Object.freeze({
+  profileKey: 'phase3_idea_revision_v1',
+  profileVersion: 1,
+  stageKey: 'IDEA_GENERATION',
+  providerKey: 'openai',
+  modelKey: 'gpt-5.6-terra',
+  modelId: 'model_openai_gpt_5_6_terra_20260903',
+  promptVersionId: 'prompt_version_idea_generation_v1',
+  pricingSnapshotId: 'pricing_model_openai_gpt_5_6_terra_20260903',
+  monetaryCeilingMicrousd: 177920,
+  maximumCalls: 1,
+  maximumAttempts: 1,
+  inputTokenCeiling: 32768,
+  maxOutputTokens: 8000,
+  timeoutMs: 90000,
+  reasoningEffort: 'medium',
+  sdkMaxRetries: 0,
+  fallback: false,
+  externalTools: false,
+  creativeRegeneration: false,
+  humanSelectionRequired: true,
+  humanApprovalRequired: true,
+} as const);
