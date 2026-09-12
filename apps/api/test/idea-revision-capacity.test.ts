@@ -3447,3 +3447,200 @@ describe('9DR-R2A literal-safe Research rendering', () => {
     ).toThrow('Prompt contains an unsupported variable.');
   });
 });
+
+const briefLiteral = 'NEW_IDEA_MARKER $& $$ $` $\' \\ " Unicode äñ\n{{context_json}}';
+async function briefFixture() {
+  const f = await ready(true, false, true);
+  f.database.exec(`
+    UPDATE idea_candidates SET status='CANDIDATE' WHERE id='idea-candidate';
+    UPDATE editorial_artifacts SET status='approved' WHERE id='storyboard';
+    INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,current_version_id,status,created_at,updated_at,version) VALUES('new-idea','workspace','project','IDEA_CANDIDATE','new-idea-v1','approved','t','t',2);
+    INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_text,source_type,content_hash,created_at,created_by) VALUES('new-idea-v1','workspace','new-idea',1,'de','NEW_IDEA_MARKER','HUMAN_EDITED','${'7'.repeat(64)}','t','owner');
+    INSERT INTO idea_candidates(id,workspace_id,project_id,artifact_id,artifact_version_id,title,target_format,status,evidence_class,created_at,updated_at,version,created_by,updated_by) VALUES('new-candidate','workspace','project','new-idea','new-idea-v1','New idea','SHORT','SELECTED','UNKNOWN','t','t',1,'owner','owner');
+    INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at) VALUES('new-approval','workspace','new-idea-v1','APPROVED','owner','owner','t');
+    INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version) VALUES('new-link','workspace','${f.command.expectedResearchVersionId}','new-idea-v1','GENERATED_FROM','CURRENT','t','t',1);
+    INSERT INTO prompt_versions(id,prompt_definition_id,version_number,template_text,input_schema_version,output_schema_version,status,content_hash,created_at) VALUES('brief-prompt','prompt_content_brief',1,'Context: {{context_json}}','content-brief-input-v1','content-brief-output-v1','active','${'8'.repeat(64)}','t');
+    INSERT INTO editorial_execution_envelopes(id,workspace_id,project_id,profile_key,profile_version,provider_id,provider_model_id,currency,monetary_ceiling_microusd,maximum_calls,status,authorized_by,created_at,updated_at,project_execution_budget_id,stage_key) VALUES('brief-envelope','workspace','project','phase3_terminal_graph_v1',1,'provider_openai','model_openai_gpt_5_6_terra_20260903','USD',201920,1,'ACTIVE','owner','t','t','original-budget','CONTENT_BRIEF');
+  `);
+  return f;
+}
+function mutateBriefFixture(db: DatabaseSync, sql: string) {
+  // Corrupt only isolated test evidence, restoring production guards before execution.
+  const triggers = db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all();
+  for (const t of triggers) db.exec(`DROP TRIGGER "${String(t.name)}"`);
+  try {
+    db.exec('PRAGMA ignore_check_constraints=ON');
+    db.exec(sql);
+  } finally {
+    db.exec('PRAGMA ignore_check_constraints=OFF');
+    for (const t of triggers) db.exec(String(t.sql));
+  }
+}
+const briefCommand = {
+  mode: 'LOCKED' as const,
+  preferredProviderKey: 'openai',
+  preferredModelKey: 'gpt-5.6-terra',
+  inputArtifactVersionId: 'new-idea-v1',
+  creativeRegeneration: false,
+};
+const briefOutput = (research: string) => ({
+  topic: 'Technical history',
+  objective: 'Explain',
+  audience: 'Learners',
+  primaryPlatformId: 'platform',
+  secondaryPlatformIds: [],
+  productionLanguage: 'de',
+  reviewLanguage: 'es',
+  format: 'SHORT',
+  targetDurationSeconds: 60,
+  narrativeAngle: 'Evidence',
+  hook: 'Hook',
+  tone: 'Factual',
+  cta: 'Learn',
+  visualDirection: 'Diagram',
+  characterVersionIds: [],
+  voiceProfileId: null,
+  monetizationStrategy: 'None',
+  platformConstraints: [],
+  editorialConstraints: [],
+  researchVersionIds: [research],
+  userNotes: '',
+});
+describe('CONTENT_BRIEF authoritative stage context', () => {
+  it('executes replacement atomically with exact context, literal fidelity and immutable history', async () => {
+    const f = await briefFixture();
+    mutateBriefFixture(
+      f.database,
+      `UPDATE editorial_artifact_versions SET content_text='${briefLiteral.replaceAll("'", "''")}' WHERE id='new-idea-v1'`,
+    );
+    const historical = f.database
+      .prepare("SELECT * FROM editorial_artifact_versions WHERE id='brief-v1'")
+      .get();
+    const adapter = providerDouble().mockResolvedValue({
+      ...fakeIdeaResult,
+      output: briefOutput(f.command.expectedResearchVersionId),
+    });
+    const before = counts(f.database);
+    try {
+      const result = await executor(f).execute(
+        'project',
+        'CONTENT_BRIEF',
+        briefCommand,
+        'brief-local',
+      );
+      expect(adapter).toHaveBeenCalledTimes(1);
+      const request = adapter.mock.calls[0]![0];
+      const context = JSON.parse(request.instructions.slice('Context: '.length)) as {
+        approvedArtifacts: Array<{ contentText: string }>;
+      };
+      expect(context.approvedArtifacts).toHaveLength(2);
+      expect(context.approvedArtifacts[0]!.contentText).toBe(briefLiteral);
+      expect(request.instructions).toContain('AUTHORITATIVE_RESEARCH_V2_MARKER');
+      for (const marker of [
+        'STALE_RESEARCH_V1',
+        'STALE_IDEA',
+        'STALE_BRIEF',
+        'STALE_SCRIPT',
+        'STALE_TRANSLATION',
+        'STALE_CRITIQUE',
+        'STALE_STORYBOARD',
+      ])
+        expect(request.instructions).not.toContain(marker);
+      expect(context).toMatchObject({
+        description: 'Stable documentary goal',
+        niche: 'Technology history',
+        narrativeTone: 'Factual narration',
+      });
+      expect(counts(f.database).map((n, i) => n - before[i]!)).toEqual([0, 0, 1, 0, 1, 1, 1]);
+      const v = f.database
+        .prepare('SELECT * FROM editorial_artifact_versions WHERE id=?')
+        .get(String(result.run.outputArtifactVersionId));
+      expect(v).toMatchObject({
+        artifact_id: 'brief',
+        version_number: 2,
+        parent_version_id: 'brief-v1',
+        source_type: 'AI_GENERATED',
+      });
+      expect(
+        f.database.prepare("SELECT * FROM editorial_artifact_versions WHERE id='brief-v1'").get(),
+      ).toEqual(historical);
+      expect(
+        f.database
+          .prepare("SELECT status,current_version_id FROM editorial_artifacts WHERE id='brief'")
+          .get(),
+      ).toEqual({ status: 'active', current_version_id: result.run.outputArtifactVersionId });
+      expect(
+        f.database
+          .prepare('SELECT * FROM artifact_approvals WHERE artifact_version_id=?')
+          .all(String(result.run.outputArtifactVersionId)),
+      ).toEqual([]);
+      expect(
+        f.database
+          .prepare(
+            'SELECT source_artifact_version_id,dependency_type FROM artifact_dependencies WHERE dependent_artifact_version_id=? ORDER BY dependency_type',
+          )
+          .all(String(result.run.outputArtifactVersionId)),
+      ).toEqual([
+        { source_artifact_version_id: 'new-idea-v1', dependency_type: 'GENERATED_FROM' },
+        {
+          source_artifact_version_id: f.command.expectedResearchVersionId,
+          dependency_type: 'USES_RESEARCH',
+        },
+      ]);
+      expect(
+        f.database
+          .prepare("SELECT validity_status FROM artifact_dependencies WHERE id='dep-bs'")
+          .get()?.validity_status,
+      ).not.toBe('CURRENT');
+      expect(
+        f.database
+          .prepare("SELECT validity_status FROM artifact_dependencies WHERE id='new-link'")
+          .get()?.validity_status,
+      ).toBe('CURRENT');
+      expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(
+        f.database
+          .prepare(
+            "SELECT reserved_microusd FROM editorial_execution_reservations WHERE envelope_id='brief-envelope'",
+          )
+          .get()?.reserved_microusd,
+      ).toBe(201920);
+    } finally {
+      f.database.close();
+    }
+  });
+  it.each([
+    "UPDATE idea_candidates SET status='CANDIDATE' WHERE id='new-candidate'",
+    "UPDATE editorial_artifacts SET status='active' WHERE id='new-idea'",
+    "UPDATE editorial_artifacts SET current_version_id=NULL WHERE id='new-idea'",
+    "DELETE FROM artifact_approvals WHERE id='new-approval'",
+    "INSERT INTO artifact_approvals SELECT 'conflict',workspace_id,artifact_version_id,'REJECTED',actor_id,actor_role,comment,decided_at FROM artifact_approvals WHERE id='new-approval'",
+    "UPDATE editorial_artifacts SET project_id='other-project' WHERE id='new-idea'",
+    "UPDATE editorial_artifacts SET workspace_id='other' WHERE id='new-idea'",
+    "DELETE FROM artifact_dependencies WHERE id='new-link'",
+    "UPDATE artifact_dependencies SET validity_status='STALE' WHERE id='new-link'",
+    "INSERT INTO artifact_dependencies SELECT 'conflict-link',workspace_id,'research-v1',dependent_artifact_version_id,dependency_type,validity_status,invalidated_at,invalidated_by_version_id,created_at,updated_at,version FROM artifact_dependencies WHERE id='new-link'",
+    "UPDATE editorial_artifacts SET current_version_id='research-v1' WHERE id='research'",
+    "UPDATE editorial_artifacts SET status='active' WHERE id='research'",
+    "DELETE FROM artifact_approvals WHERE id='approval-v2'",
+    "UPDATE editorial_artifact_versions SET content_json='{broken' WHERE artifact_id='research' AND version_number=2",
+    "UPDATE editorial_artifact_versions SET content_json='{}',content_text='' WHERE artifact_id='research' AND version_number=2",
+    "UPDATE prompt_versions SET template_text='No placeholder' WHERE id='brief-prompt'",
+  ])('rejects unsafe evidence before persistence: %s', async (sql) => {
+    const f = await briefFixture();
+    const adapter = providerDouble();
+    try {
+      f.database.exec('PRAGMA foreign_keys=OFF');
+      mutateBriefFixture(f.database, sql);
+      f.database.exec('PRAGMA foreign_keys=ON');
+      const before = counts(f.database);
+      await expect(
+        executor(f).execute('project', 'CONTENT_BRIEF', briefCommand, 'unsafe-brief'),
+      ).rejects.toThrow();
+      expect(adapter).not.toHaveBeenCalled();
+      expect(counts(f.database)).toEqual(before);
+    } finally {
+      f.database.close();
+    }
+  });
+});

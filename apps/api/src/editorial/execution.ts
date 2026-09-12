@@ -450,6 +450,8 @@ export class EditorialExecutionService {
       throw new ProviderError('PERMANENT', false, 'Active prompt version is unavailable.');
     if (ideaCapacity && !prompt.templateText.includes('{{context_json}}'))
       throw new IdeaCapacityError(422, 'idea_revision_context_unavailable');
+    if (task === 'CONTENT_BRIEF' && !prompt.templateText.includes('{{context_json}}'))
+      throw new ProviderError('PERMANENT', false, 'brief_context_unavailable');
     const selectedOutputSchema =
       task !== 'STORYBOARD_PLANNER'
         ? outputSchema[task]
@@ -974,14 +976,15 @@ export class EditorialExecutionService {
     });
     // Revision Ideas start from their exact Research input. Downstream approval
     // does not establish freshness after a Research revision, so do not load it.
-    const artifacts = researchOnly
-      ? { results: [] as Row[] }
-      : await this.db
-          .prepare(
-            `SELECT a.artifact_type AS artifactType,v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson FROM editorial_artifacts a JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.project_id=? AND a.workspace_id=? AND a.deleted_at IS NULL AND a.status='approved' ORDER BY a.artifact_type`,
-          )
-          .bind(projectId, this.actor.workspaceId)
-          .all<Row>();
+    const artifacts =
+      researchOnly || task === 'CONTENT_BRIEF'
+        ? { results: [] as Row[] }
+        : await this.db
+            .prepare(
+              `SELECT a.artifact_type AS artifactType,v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson FROM editorial_artifacts a JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.project_id=? AND a.workspace_id=? AND a.deleted_at IS NULL AND a.status='approved' ORDER BY a.artifact_type`,
+            )
+            .bind(projectId, this.actor.workspaceId)
+            .all<Row>();
     const lineage: LineageEdge[] = [];
     let storyboardSourceSegments: Row[] = [];
     const exactCurrentApproved = async (versionId: string | null, artifactType: string) => {
@@ -1055,18 +1058,56 @@ export class EditorialExecutionService {
           false,
           'The exact approved current Idea must be selected.',
         );
-      const research = await this.db
-        .prepare(
-          `SELECT rv.id versionId FROM artifact_dependencies d JOIN editorial_artifact_versions rv ON rv.id=d.source_artifact_version_id JOIN editorial_artifacts ra ON ra.id=rv.artifact_id AND ra.current_version_id=rv.id WHERE d.dependent_artifact_version_id=? AND d.dependency_type='GENERATED_FROM' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL AND ra.workspace_id=? AND ra.project_id=? AND ra.artifact_type='RESEARCH' AND ra.status='approved' AND ra.deleted_at IS NULL`,
-        )
-        .bind(idea.versionId, this.actor.workspaceId, projectId)
-        .first<Row>();
-      if (!research)
-        throw new ProviderError(
-          'PERMANENT',
-          false,
-          'The selected Idea requires its exact approved current Research source.',
-        );
+      // Resolve lineage before filtering authority: conflicting CURRENT edges must fail closed.
+      const links = (
+        await this.db
+          .prepare(
+            `SELECT source_artifact_version_id versionId FROM artifact_dependencies
+         WHERE dependent_artifact_version_id=? AND workspace_id=? AND dependency_type='GENERATED_FROM'
+           AND validity_status='CURRENT' AND invalidated_at IS NULL AND invalidated_by_version_id IS NULL`,
+          )
+          .bind(idea.versionId, this.actor.workspaceId)
+          .all<Row>()
+      ).results;
+      if (links.length !== 1)
+        throw new ProviderError('PERMANENT', false, 'brief_research_lineage_invalid');
+      const research = await exactCurrentApproved(String(links[0]!.versionId), 'RESEARCH');
+      for (const source of [idea, research]) {
+        const approvals = (
+          await this.db
+            .prepare(
+              `SELECT decision FROM artifact_approvals WHERE workspace_id=? AND artifact_version_id=?`,
+            )
+            .bind(this.actor.workspaceId, source.versionId)
+            .all<Row>()
+        ).results;
+        if (approvals.length !== 1 || approvals[0]!.decision !== 'APPROVED')
+          throw new ProviderError('PERMANENT', false, 'brief_approval_invalid');
+        let parsed: unknown = null;
+        if (source.contentJson !== null && source.contentJson !== undefined) {
+          try {
+            if (typeof source.contentJson !== 'string') throw new Error('invalid source');
+            parsed = JSON.parse(source.contentJson);
+          } catch {
+            throw new ProviderError('PERMANENT', false, 'brief_source_invalid');
+          }
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+            throw new ProviderError('PERMANENT', false, 'brief_source_invalid');
+        }
+        const hasText =
+          typeof source.contentText === 'string' && source.contentText.trim().length > 0;
+        const field = source === research ? 'summary' : 'title';
+        const value = (parsed as Row | null)?.[field];
+        if (!hasText && !(typeof value === 'string' && value.trim()))
+          throw new ProviderError('PERMANENT', false, 'brief_source_invalid');
+        artifacts.results.push({
+          artifactType: source.artifactType,
+          versionId: source.versionId,
+          languageCode: source.languageCode,
+          contentText: source.contentText,
+          contentJson: source.contentJson,
+        });
+      }
       lineage.push(
         { sourceVersionId: String(idea.versionId), dependencyType: 'GENERATED_FROM' },
         { sourceVersionId: String(research.versionId), dependencyType: 'USES_RESEARCH' },
@@ -1376,6 +1417,7 @@ export class EditorialExecutionService {
               this.actor.id,
             ),
         );
+      const invalidations = type === 'CONTENT_BRIEF' ? ([] as typeof statements) : statements;
       if (existing?.currentVersionId) {
         const dependents = await this.db
           .prepare(
@@ -1384,7 +1426,7 @@ export class EditorialExecutionService {
           .bind(existing.currentVersionId, this.actor.workspaceId)
           .all<{ id: string; artifactType: ArtifactType }>();
         for (const dependent of dependents.results) {
-          statements.push(
+          invalidations.push(
             this.db
               .prepare(
                 `UPDATE artifact_dependencies SET validity_status=?,invalidated_at=?,invalidated_by_version_id=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
@@ -1399,7 +1441,7 @@ export class EditorialExecutionService {
               ),
           );
           if (dependent.artifactType === 'PREFLIGHT')
-            statements.push(
+            invalidations.push(
               this.db
                 .prepare(
                   `UPDATE preflight_assessments SET generation_readiness='NOT_READY' WHERE artifact_version_id=(SELECT dependent_artifact_version_id FROM artifact_dependencies WHERE id=?) AND workspace_id=?`,
@@ -1436,6 +1478,7 @@ export class EditorialExecutionService {
           )
           .bind(versionId, at, this.actor.id, artifactId, this.actor.workspaceId),
       );
+      if (type === 'CONTENT_BRIEF') statements.push(...invalidations);
       for (const edge of lineage)
         statements.push(
           this.db
