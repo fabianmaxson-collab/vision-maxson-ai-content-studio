@@ -107,7 +107,7 @@ describe('explicit remediation execution binding', () => {
     });
     await expect(
       loadGovernedTerminalEnvelope(d1, actor, 'project', 'STORYBOARD_PLANNER', selected),
-    ).resolves.toBeTruthy();
+    ).rejects.toThrow('An active governed stage envelope is required.');
   });
 
   it.each([

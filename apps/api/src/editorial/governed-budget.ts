@@ -190,9 +190,17 @@ export async function loadGovernedTerminalEnvelope(
 ) {
   const envelope = await db
     .prepare(
-      `SELECT e.id,e.project_execution_budget_id projectExecutionBudgetId,e.monetary_ceiling_microusd monetaryCeilingMicrousd,e.maximum_calls maximumCalls,e.status FROM editorial_execution_envelopes e JOIN editorial_project_execution_budgets b ON b.id=e.project_execution_budget_id JOIN ai_providers p ON p.id=e.provider_id JOIN ai_provider_models m ON m.id=e.provider_model_id WHERE e.profile_key<>'phase3_idea_revision_v1' AND b.profile_key<>'phase3_idea_revision_v1' AND e.workspace_id=? AND e.project_id=? AND e.stage_key=? AND e.status='ACTIVE' AND e.maximum_calls=1 AND b.status='ACTIVE' AND p.key=? AND m.model_key=?`,
+      `SELECT e.id,e.project_execution_budget_id projectExecutionBudgetId,e.monetary_ceiling_microusd monetaryCeilingMicrousd,e.maximum_calls maximumCalls,e.status FROM editorial_execution_envelopes e JOIN editorial_project_execution_budgets b ON b.id=e.project_execution_budget_id JOIN ai_providers p ON p.id=e.provider_id JOIN ai_provider_models m ON m.id=e.provider_model_id WHERE e.profile_key=? AND b.profile_key=? AND e.profile_version=1 AND b.profile_version=1 AND e.workspace_id=? AND e.project_id=? AND e.stage_key=? AND e.status='ACTIVE' AND e.maximum_calls=1 AND b.status='ACTIVE' AND p.key=? AND m.model_key=?`,
     )
-    .bind(actor.workspaceId, projectId, stage, selected.providerKey, selected.modelKey)
+    .bind(
+      PHASE3_TERMINAL_GOVERNED_PROFILE,
+      PHASE3_TERMINAL_GOVERNED_PROFILE,
+      actor.workspaceId,
+      projectId,
+      stage,
+      selected.providerKey,
+      selected.modelKey,
+    )
     .first<Row>();
   if (!envelope)
     throw new ProviderError('UNAVAILABLE', false, 'An active governed stage envelope is required.');

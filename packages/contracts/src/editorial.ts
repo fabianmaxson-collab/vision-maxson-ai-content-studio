@@ -470,6 +470,7 @@ export const intelligenceCommandSchema = z
     creativeRegeneration: z.boolean().default(false),
     remediationId: id.optional(),
     ideaRevisionCapacityId: id.optional(),
+    contentBriefRevisionCapacityId: id.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -483,6 +484,20 @@ export const intelligenceCommandSchema = z
         value.creativeRegeneration)
     )
       context.addIssue({ code: 'custom', message: 'Invalid Idea revision execution policy' });
+    if (
+      value.contentBriefRevisionCapacityId &&
+      (value.ideaRevisionCapacityId ||
+        value.remediationId ||
+        value.mode !== 'LOCKED' ||
+        value.preferredProviderKey !== 'openai' ||
+        value.preferredModelKey !== 'gpt-5.6-terra' ||
+        !value.inputArtifactVersionId ||
+        value.creativeRegeneration)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Invalid Content Brief revision execution policy',
+      });
     if (value.mode === 'LOCKED' && (!value.preferredProviderKey || !value.preferredModelKey))
       context.addIssue({ code: 'custom', message: 'LOCKED requires provider and model' });
   });
@@ -700,6 +715,82 @@ export const ideaRevisionRecoveryResultSchema = z
     profileVersion: z.literal(1),
     stageKey: z.literal('IDEA_GENERATION'),
     monetaryCeilingMicrousd: z.literal(177920),
+    maximumCalls: z.literal(1),
+  })
+  .strict();
+
+export const contentBriefRevisionCapacitySchema = z
+  .object({
+    ideaCandidateId: id,
+    expectedIdeaCandidateRevision: z.number().int().positive().safe(),
+    ideaVersionId: id,
+    ideaApprovalId: id,
+    expectedIdeaArtifactRevision: z.number().int().positive().safe(),
+    researchVersionId: id,
+    expectedResearchArtifactRevision: z.number().int().positive().safe(),
+    researchApprovalId: id,
+    expectedProjectVersion: z.number().int().positive().safe(),
+  })
+  .strict();
+export type ContentBriefRevisionCapacityCommand = z.infer<
+  typeof contentBriefRevisionCapacitySchema
+>;
+export const contentBriefRevisionRecoverySchema = z
+  .object({
+    expectedFailedRunId: id.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{2,99}$/u),
+    expectedFailedReservationId: id.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{2,99}$/u),
+    expectedProjectVersion: z.number().int().positive().safe(),
+  })
+  .strict();
+export type ContentBriefRevisionRecoveryCommand = z.infer<
+  typeof contentBriefRevisionRecoverySchema
+>;
+export const contentBriefRevisionCapacityResultSchema = z
+  .object({
+    capacityId: id,
+    projectId: id,
+    revisionRequestId: id,
+    researchArtifactId: id,
+    researchVersionId: id,
+    researchApprovalId: id,
+    ideaCandidateId: id,
+    ideaArtifactId: id,
+    ideaVersionId: id,
+    ideaApprovalId: id,
+    briefArtifactId: id,
+    expectedCurrentBriefVersionId: id,
+    budgetId: id,
+    envelopeId: id,
+    auditEventId: id,
+    profileKey: z.literal('phase3_content_brief_revision_v1'),
+    profileVersion: z.literal(1),
+    stageKey: z.literal('CONTENT_BRIEF'),
+    monetaryCeilingMicrousd: z.literal(201920),
+    maximumCalls: z.literal(1),
+  })
+  .strict();
+
+export const contentBriefRevisionRecoveryResultSchema = z
+  .object({
+    recoveryId: id,
+    capacityId: id,
+    projectId: id,
+    revisionRequestId: id,
+    researchArtifactId: id,
+    researchVersionId: id,
+    researchApprovalId: id,
+    budgetId: id,
+    originalEnvelopeId: id,
+    failedReservationId: id,
+    failedRunId: id,
+    replacementEnvelopeId: id,
+    originalProjectVersion: z.number().int().positive().safe(),
+    recoveryProjectVersion: z.number().int().positive().safe(),
+    auditEventId: id,
+    profileKey: z.literal('phase3_content_brief_revision_v1'),
+    profileVersion: z.literal(1),
+    stageKey: z.literal('CONTENT_BRIEF'),
+    monetaryCeilingMicrousd: z.literal(201920),
     maximumCalls: z.literal(1),
   })
   .strict();

@@ -1,3 +1,11 @@
+import {
+  ContentBriefRevisionCapacityService,
+  ContentBriefCapacityError,
+} from './content-brief-revision-capacity';
+import {
+  contentBriefRevisionCapacitySchema,
+  contentBriefRevisionRecoverySchema,
+} from '@vision-maxson/contracts';
 import { IdeaRevisionCapacityService, IdeaCapacityError } from './idea-revision-capacity';
 import { ideaRevisionCapacitySchema, ideaRevisionRecoverySchema } from '@vision-maxson/contracts';
 import {
@@ -570,6 +578,9 @@ for (const [route, task] of taskRoutes)
           inputArtifactVersionId,
           creativeRegeneration: parsed.data.creativeRegeneration,
           ...(parsed.data.remediationId ? { remediationId: parsed.data.remediationId } : {}),
+          ...(parsed.data.contentBriefRevisionCapacityId
+            ? { contentBriefRevisionCapacityId: parsed.data.contentBriefRevisionCapacityId }
+            : {}),
           ...(parsed.data.ideaRevisionCapacityId
             ? { ideaRevisionCapacityId: parsed.data.ideaRevisionCapacityId }
             : {}),
@@ -584,7 +595,7 @@ for (const [route, task] of taskRoutes)
       );
       return c.json(result, result.idempotentReplay ? 200 : 201);
     } catch (error) {
-      if (error instanceof IdeaCapacityError)
+      if (error instanceof IdeaCapacityError || error instanceof ContentBriefCapacityError)
         return problem(c, error.status, 'Validation Failed', error.message);
       if (error instanceof ProviderError)
         return problem(
@@ -699,6 +710,76 @@ editorialRoutes.post(
         error instanceof IdeaCapacityError ? error.status : 500,
         'Validation Failed',
         error instanceof IdeaCapacityError ? error.message : 'Idea revision recovery failed.',
+      );
+    }
+  },
+);
+
+editorialRoutes.post(
+  '/editorial-revision-requests/:requestId/content-brief-generation-capacity',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const requestId = c.req.param('requestId');
+    const key = c.req.header('Idempotency-Key')?.trim();
+    const parsed = contentBriefRevisionCapacitySchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!validRevisionRouteId(requestId) || !key || key.length > 200 || !parsed.success)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'Invalid Content Brief revision capacity request.',
+      );
+    try {
+      const result = await new ContentBriefRevisionCapacityService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+      }).authorize(requestId, key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      return problem(
+        c,
+        error instanceof ContentBriefCapacityError ? error.status : 500,
+        'Validation Failed',
+        error instanceof ContentBriefCapacityError
+          ? error.message
+          : 'Content Brief revision capacity authorization failed.',
+      );
+    }
+  },
+);
+
+editorialRoutes.post(
+  '/editorial-content-brief-revision-capacities/:capacityId/recover',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const capacityId = c.req.param('capacityId');
+    const key = c.req.header('Idempotency-Key')?.trim();
+    const parsed = contentBriefRevisionRecoverySchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!validRevisionRouteId(capacityId) || !key || key.length > 200 || !parsed.success)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'Invalid Content Brief revision recovery request.',
+      );
+    try {
+      const result = await new ContentBriefRevisionCapacityService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+      }).recover(capacityId, key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      return problem(
+        c,
+        error instanceof ContentBriefCapacityError ? error.status : 500,
+        'Validation Failed',
+        error instanceof ContentBriefCapacityError
+          ? error.message
+          : 'Content Brief revision recovery failed.',
       );
     }
   },

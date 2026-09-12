@@ -1,3 +1,16 @@
+import {
+  loadContentBriefRevisionCapacity,
+  loadContentBriefPreDispatchClaim,
+  contentBriefPreDispatchClaimStatement,
+  inspectContentBriefPreDispatchFailure,
+  ContentBriefDispatchObserved,
+  authorizeContentBriefRevisionDispatch,
+  ContentBriefCapacityError,
+  ContentBriefDispatchError,
+  contentBriefPublicationGuard,
+  contentBriefClaimGuard,
+  contentBriefRevisionPolicy,
+} from './content-brief-revision-capacity';
 import { calculateUsageMicrousd } from '@vision-maxson/domain';
 import {
   loadIdeaRevisionCapacity,
@@ -67,8 +80,10 @@ type Command = {
   creativeRegeneration: boolean;
   remediationId?: string;
   ideaRevisionCapacityId?: string;
+  contentBriefRevisionCapacityId?: string;
 };
 type Row = Record<string, unknown>;
+type BriefClaim = Awaited<ReturnType<typeof loadContentBriefPreDispatchClaim>>;
 type LineageEdge = {
   sourceVersionId: string;
   dependencyType: 'GENERATED_FROM' | 'USES_RESEARCH' | 'EVALUATES_SOURCE' | 'INFORMED_BY';
@@ -290,7 +305,9 @@ function safeError(error: unknown) {
     : new ProviderError(
         'PERMANENT',
         false,
-        error instanceof IdeaCapacityError ? error.message : 'AI execution failed.',
+        error instanceof IdeaCapacityError || error instanceof ContentBriefCapacityError
+          ? error.message
+          : 'AI execution failed.',
       );
 }
 
@@ -349,7 +366,12 @@ export class EditorialExecutionService {
     private readonly config: ExecutionConfig,
   ) {}
 
-  async execute(projectId: string, task: Task, command: Command, idempotencyKey: string) {
+  async execute(
+    projectId: string,
+    task: Task,
+    command: Command,
+    idempotencyKey: string,
+  ): Promise<{ run: Row; idempotentReplay: boolean }> {
     if (task === 'PREFLIGHT_ANALYSIS')
       throw new ProviderError(
         'PERMANENT',
@@ -363,6 +385,7 @@ export class EditorialExecutionService {
       )
       .bind(this.actor.workspaceId, idempotencyKey)
       .first<Row>();
+    let claimed: BriefClaim | null = null;
     if (existing) {
       const metadata =
         typeof existing.safeMetadataJson === 'string'
@@ -374,8 +397,58 @@ export class EditorialExecutionService {
           false,
           'Idempotency key is already bound to a different command.',
         );
-      return { run: existing, idempotentReplay: true };
+      if (
+        task === 'CONTENT_BRIEF' &&
+        command.contentBriefRevisionCapacityId &&
+        existing.status === 'QUEUED'
+      ) {
+        claimed = await loadContentBriefPreDispatchClaim(
+          this.db,
+          this.actor,
+          projectId,
+          command.contentBriefRevisionCapacityId,
+          command.inputArtifactVersionId,
+          this.config.environment ?? 'runtime',
+          String(existing.id),
+          idempotencyKey,
+          commandHash,
+        );
+      } else return { run: existing, idempotentReplay: true };
     }
+    const progress = { dispatchPipelineEntered: false };
+    try {
+      return await this.executeClaimedOrNew(
+        projectId,
+        task,
+        command,
+        idempotencyKey,
+        commandHash,
+        claimed,
+        progress,
+      );
+    } catch (error) {
+      if (claimed && !progress.dispatchPipelineEntered)
+        return this.failBriefPreparation(
+          projectId,
+          command,
+          idempotencyKey,
+          commandHash,
+          claimed,
+          error,
+        );
+      throw error;
+    }
+  }
+
+  private async executeClaimedOrNew(
+    projectId: string,
+    task: Task,
+    command: Command,
+    idempotencyKey: string,
+    commandHash: string,
+    claimed: BriefClaim | null,
+    progress: { dispatchPipelineEntered: boolean },
+  ) {
     if (!(await this.terminalSchemaReady()))
       throw new ProviderError(
         'UNAVAILABLE',
@@ -392,15 +465,45 @@ export class EditorialExecutionService {
         command.creativeRegeneration)
     )
       throw new ProviderError('PERMANENT', false, 'Invalid Idea revision execution policy.');
-    const ideaCapacity = command.ideaRevisionCapacityId
-      ? await loadIdeaRevisionCapacity(
-          this.db,
-          this.actor,
-          projectId,
-          command.ideaRevisionCapacityId,
-          command.inputArtifactVersionId,
-        )
-      : null;
+    if (
+      command.contentBriefRevisionCapacityId &&
+      (task !== 'CONTENT_BRIEF' ||
+        command.ideaRevisionCapacityId ||
+        command.remediationId ||
+        command.mode !== 'LOCKED' ||
+        command.preferredProviderKey !== 'openai' ||
+        command.preferredModelKey !== 'gpt-5.6-terra' ||
+        command.creativeRegeneration ||
+        !command.inputArtifactVersionId)
+    )
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'Invalid Content Brief revision execution policy.',
+      );
+    const briefCapacity =
+      claimed?.capacity ??
+      (command.contentBriefRevisionCapacityId
+        ? await loadContentBriefRevisionCapacity(
+            this.db,
+            this.actor,
+            projectId,
+            command.contentBriefRevisionCapacityId,
+            command.inputArtifactVersionId,
+            this.config.environment ?? 'runtime',
+          )
+        : null);
+    const revisionCapacity =
+      briefCapacity ??
+      (command.ideaRevisionCapacityId
+        ? await loadIdeaRevisionCapacity(
+            this.db,
+            this.actor,
+            projectId,
+            command.ideaRevisionCapacityId,
+            command.inputArtifactVersionId,
+          )
+        : null);
     if (command.remediationId && task !== 'STORYBOARD_PLANNER')
       throw new ProviderError(
         'PERMANENT',
@@ -422,7 +525,7 @@ export class EditorialExecutionService {
       projectId,
       task,
       command.inputArtifactVersionId,
-      ideaCapacity !== null,
+      command.ideaRevisionCapacityId !== undefined,
     );
     if (task === 'SCRIPT_WRITER_SHORT' && project.format !== 'SHORT')
       throw new ProviderError(
@@ -436,8 +539,8 @@ export class EditorialExecutionService {
       )
       .bind(
         promptKey[task],
-        ideaCapacity?.prompt_version_id ?? null,
-        ideaCapacity?.prompt_version_id ?? null,
+        revisionCapacity?.prompt_version_id ?? null,
+        revisionCapacity?.prompt_version_id ?? null,
       )
       .first<{
         id: string;
@@ -448,8 +551,11 @@ export class EditorialExecutionService {
       }>();
     if (!prompt)
       throw new ProviderError('PERMANENT', false, 'Active prompt version is unavailable.');
-    if (ideaCapacity && !prompt.templateText.includes('{{context_json}}'))
+    if (revisionCapacity && !prompt.templateText.includes('{{context_json}}')) {
+      if (briefCapacity)
+        throw new ContentBriefCapacityError(422, 'content_brief_revision_context_unavailable');
       throw new IdeaCapacityError(422, 'idea_revision_context_unavailable');
+    }
     if (task === 'CONTENT_BRIEF' && !prompt.templateText.includes('{{context_json}}'))
       throw new ProviderError('PERMANENT', false, 'brief_context_unavailable');
     const selectedOutputSchema =
@@ -467,11 +573,11 @@ export class EditorialExecutionService {
         `SELECT p.id AS providerId,p.key AS providerKey,m.id AS modelId,m.model_key AS modelKey,m.capabilities_json AS capabilitiesJson,m.status,ps.id AS pricingSnapshotId,ps.input_unit_price AS inputPrice,ps.output_unit_price AS outputPrice,ps.currency,ps.unit_name AS unitName,ps.verification_status AS verificationStatus,ps.effective_from AS effectiveFrom,ps.effective_to AS effectiveTo FROM ai_providers p JOIN ai_provider_models m ON m.provider_id=p.id LEFT JOIN ai_pricing_snapshots ps ON ps.provider_model_id=m.id AND ps.effective_to IS NULL WHERE p.status='configured' AND m.status='available'`,
       )
       .all<Row>();
-    if (ideaCapacity)
+    if (revisionCapacity)
       modelRows.results = modelRows.results.filter(
         (row) =>
-          row.modelId === ideaCapacity.provider_model_id &&
-          row.pricingSnapshotId === ideaCapacity.pricing_snapshot_id,
+          row.modelId === revisionCapacity.provider_model_id &&
+          row.pricingSnapshotId === revisionCapacity.pricing_snapshot_id,
       );
     const candidates = modelRows.results.map((row) => {
       const cfg = parseCapabilities(row.capabilitiesJson);
@@ -522,8 +628,8 @@ export class EditorialExecutionService {
         'Creative regeneration is not allowed by the execution profile.',
       );
     const governedStage = isGovernedTerminalStage(task);
-    const stepPolicy = ideaCapacity
-      ? { ...policy, ...ideaRevisionPolicy }
+    const stepPolicy = revisionCapacity
+      ? { ...policy, ...(briefCapacity ? contentBriefRevisionPolicy : ideaRevisionPolicy) }
       : boundedStep
         ? boundedProfile.steps[task]
         : governedStage
@@ -556,7 +662,7 @@ export class EditorialExecutionService {
         'Provider-bound input exceeds the execution profile ceiling.',
       );
     const envelope =
-      ideaCapacity ??
+      revisionCapacity ??
       (boundedStep
         ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected, boundedProfile)
         : governedStage
@@ -576,7 +682,7 @@ export class EditorialExecutionService {
       : governedStage
         ? calculateGovernedReservation(selectedRow, task)
         : null;
-    const runId = newId('intelligence_run'),
+    const runId = claimed?.runId ?? newId('intelligence_run'),
       at = now();
     const regeneration = command.creativeRegeneration ? 1 : 0;
     const insertRun = this.db
@@ -598,11 +704,15 @@ export class EditorialExecutionService {
         regeneration,
         JSON.stringify({
           commandHash,
-          ...(ideaCapacity
+          ...(revisionCapacity
             ? {
-                ideaRevisionCapacityId: command.ideaRevisionCapacityId,
-                ...(ideaCapacity.recoveryId
-                  ? { ideaRevisionRecoveryId: ideaCapacity.recoveryId }
+                [briefCapacity ? 'contentBriefRevisionCapacityId' : 'ideaRevisionCapacityId']:
+                  command.contentBriefRevisionCapacityId ?? command.ideaRevisionCapacityId,
+                ...(revisionCapacity.recoveryId
+                  ? {
+                      [briefCapacity ? 'contentBriefRevisionRecoveryId' : 'ideaRevisionRecoveryId']:
+                        revisionCapacity.recoveryId,
+                    }
                   : {}),
               }
             : {}),
@@ -611,9 +721,21 @@ export class EditorialExecutionService {
         at,
         at,
       );
-    if ((boundedStep || governedStage) && envelope && reservedMicrousd !== null) {
+    if (!claimed && (boundedStep || governedStage) && envelope && reservedMicrousd !== null) {
       try {
         await this.db.batch([
+          ...(briefCapacity
+            ? [
+                await contentBriefClaimGuard(
+                  this.db,
+                  this.actor,
+                  projectId,
+                  command.contentBriefRevisionCapacityId!,
+                  command.inputArtifactVersionId,
+                  this.config.environment ?? 'runtime',
+                ),
+              ]
+            : []),
           insertRun,
           reservationStatement(this.db, {
             envelopeId: String(envelope.id),
@@ -628,30 +750,48 @@ export class EditorialExecutionService {
               ? String(envelope.projectExecutionBudgetId)
               : null,
           }),
+          ...(briefCapacity
+            ? [
+                this.db
+                  .prepare(
+                    `UPDATE editorial_execution_envelopes SET status='CONSUMED',updated_at=?,version=version+1 WHERE id=? AND status='ACTIVE' AND (SELECT COUNT(*) FROM editorial_execution_reservations WHERE envelope_id=?) >= maximum_calls`,
+                  )
+                  .bind(at, envelope.id, envelope.id),
+              ]
+            : []),
         ]);
-        await this.db
-          .prepare(
-            `UPDATE editorial_execution_envelopes SET status='CONSUMED',updated_at=?,version=version+1 WHERE id=? AND status='ACTIVE' AND (SELECT COUNT(*) FROM editorial_execution_reservations WHERE envelope_id=?) >= maximum_calls`,
-          )
-          .bind(now(), envelope.id, envelope.id)
-          .run();
+        // Brief consumption is already part of the claim batch. No follow-up write is needed.
+        if (!briefCapacity)
+          await this.db
+            .prepare(
+              `UPDATE editorial_execution_envelopes SET status='CONSUMED',updated_at=?,version=version+1 WHERE id=? AND status='ACTIVE' AND (SELECT COUNT(*) FROM editorial_execution_reservations WHERE envelope_id=?) >= maximum_calls`,
+            )
+            .bind(now(), envelope.id, envelope.id)
+            .run();
       } catch {
         const winner = await this.existingRun(idempotencyKey);
-        if (winner && this.commandHash(winner) === commandHash)
+        if (winner && this.commandHash(winner) === commandHash) {
+          if (briefCapacity && winner.status === 'QUEUED')
+            return this.execute(projectId, task, command, idempotencyKey);
           return { run: winner, idempotentReplay: true };
+        }
         throw new ProviderError(
           'UNAVAILABLE',
           false,
           'The execution step could not be reserved atomically.',
         );
       }
-    } else await insertRun.run();
-    const reserved = await this.db
-      .prepare(
-        `SELECT id,status,output_artifact_version_id AS outputArtifactVersionId,safe_metadata_json AS safeMetadataJson FROM intelligence_runs WHERE workspace_id=? AND idempotency_key=?`,
-      )
-      .bind(this.actor.workspaceId, idempotencyKey)
-      .first<Row>();
+    } else if (!claimed) await insertRun.run();
+    // A successful Brief claim inserted this Run and its reservation in the same transaction.
+    // Duplicate claims reconcile in the catch above; the winning claim needs no extra read.
+    const reserved: Row | null = briefCapacity
+      ? { id: runId }
+      : await this.db
+          .prepare(
+            `SELECT id,status,output_artifact_version_id AS outputArtifactVersionId,safe_metadata_json AS safeMetadataJson FROM intelligence_runs WHERE workspace_id=? AND idempotency_key=?`,
+          )
+          .bind(this.actor.workspaceId, idempotencyKey)
+          .first<Row>();
     if (!reserved) throw new ProviderError('PERMANENT', false, 'Reserved run could not be read.');
     if (reserved.id !== runId) {
       if (this.commandHash(reserved) !== commandHash)
@@ -662,7 +802,6 @@ export class EditorialExecutionService {
         );
       return { run: reserved, idempotentReplay: true };
     }
-    const adapter = new OpenAIResponsesAdapter(this.config.openAIApiKey, this.config.openAIBaseUrl);
     let providerCompletion:
       | {
           result: ProviderExecutionResult;
@@ -676,6 +815,7 @@ export class EditorialExecutionService {
         }
       | undefined;
     let validationDiagnostic: ReturnType<typeof sanitizeValidationIssues> | undefined;
+    let briefDispatchEntered = false;
     const observer = this.observer(
       runId,
       async (result) => {
@@ -713,8 +853,26 @@ export class EditorialExecutionService {
             ),
         ]);
       },
-      ideaCapacity
+      revisionCapacity
         ? async () => {
+            if (briefCapacity) {
+              briefDispatchEntered = true;
+              await authorizeContentBriefRevisionDispatch(
+                this.db,
+                this.actor,
+                projectId,
+                command.contentBriefRevisionCapacityId!,
+                runId,
+                this.config.requestId ?? runId,
+                {
+                  idempotencyKey,
+                  commandHash,
+                  ideaVersionId: command.inputArtifactVersionId,
+                  environment: this.config.environment ?? 'runtime',
+                },
+              );
+              return;
+            }
             await authorizeIdeaRevisionDispatch(
               this.db,
               this.actor,
@@ -726,7 +884,12 @@ export class EditorialExecutionService {
         : undefined,
     );
     const started = Date.now();
+    progress.dispatchPipelineEntered = true;
     try {
+      const adapter = new OpenAIResponsesAdapter(
+        this.config.openAIApiKey,
+        this.config.openAIBaseUrl,
+      );
       const result = await new AIExecutionGateway(new Map([['openai', adapter]])).execute<
         Row,
         unknown
@@ -791,6 +954,7 @@ export class EditorialExecutionService {
           costs,
           metadata,
           governed: boundedStep || governedStage,
+          briefCapacityId: command.contentBriefRevisionCapacityId,
           reservedMicrousd,
         },
       );
@@ -806,10 +970,21 @@ export class EditorialExecutionService {
         idempotentReplay: false,
       };
     } catch (error) {
-      const dispatchFailure = error instanceof IdeaDispatchError ? error : null;
+      if (error instanceof ContentBriefDispatchObserved) {
+        const winner = await this.existingRun(idempotencyKey);
+        if (winner && this.commandHash(winner) === commandHash)
+          return { run: winner, idempotentReplay: true };
+        throw new ContentBriefCapacityError(409, 'content_brief_revision_claim_not_resumable');
+      }
+      const dispatchFailure =
+        error instanceof IdeaDispatchError || error instanceof ContentBriefDispatchError
+          ? error
+          : briefCapacity && !briefDispatchEntered
+            ? new ContentBriefDispatchError('NOT_COMMITTED')
+            : null;
       const undispatchedIdea =
-        ideaCapacity !== null && dispatchFailure?.dispatchOutcome === 'NOT_COMMITTED';
-      const mapped = safeError(error);
+        revisionCapacity !== null && dispatchFailure?.dispatchOutcome === 'NOT_COMMITTED';
+      const mapped = safeError(dispatchFailure ?? error);
       const terminalAt = now();
       const auditId = newId('audit');
       const terminalStatus = mapped.retryable ? 'FAILED_RETRYABLE' : 'FAILED_PERMANENT';
@@ -820,9 +995,13 @@ export class EditorialExecutionService {
           ? {
               dispatchAuthorizationOutcome: dispatchFailure.dispatchOutcome,
               providerAdapterInvoked: false,
-              ideaRevisionCapacityId: command.ideaRevisionCapacityId,
-              ...(ideaCapacity?.recoveryId
-                ? { ideaRevisionRecoveryId: ideaCapacity.recoveryId }
+              [briefCapacity ? 'contentBriefRevisionCapacityId' : 'ideaRevisionCapacityId']:
+                command.contentBriefRevisionCapacityId ?? command.ideaRevisionCapacityId,
+              ...(revisionCapacity?.recoveryId
+                ? {
+                    [briefCapacity ? 'contentBriefRevisionRecoveryId' : 'ideaRevisionRecoveryId']:
+                      revisionCapacity.recoveryId,
+                  }
                 : {}),
             }
           : {}),
@@ -830,9 +1009,13 @@ export class EditorialExecutionService {
           ? {
               dispatchAuthorized: false,
               providerCalls: 0,
-              ideaRevisionCapacityId: command.ideaRevisionCapacityId,
-              ...(ideaCapacity?.recoveryId
-                ? { ideaRevisionRecoveryId: ideaCapacity.recoveryId }
+              [briefCapacity ? 'contentBriefRevisionCapacityId' : 'ideaRevisionCapacityId']:
+                command.contentBriefRevisionCapacityId ?? command.ideaRevisionCapacityId,
+              ...(revisionCapacity?.recoveryId
+                ? {
+                    [briefCapacity ? 'contentBriefRevisionRecoveryId' : 'ideaRevisionRecoveryId']:
+                      revisionCapacity.recoveryId,
+                  }
                 : {}),
               ...(dispatchFailure?.rejection === 'ELIGIBILITY_REJECTED'
                 ? { preDispatchFailure: 'ELIGIBILITY_REJECTED' }
@@ -920,12 +1103,104 @@ export class EditorialExecutionService {
       try {
         await this.db.batch(statements);
       } catch (terminalError) {
-        if (dispatchFailure) throw new IdeaDispatchError('AMBIGUOUS');
+        if (dispatchFailure)
+          throw briefCapacity
+            ? new ContentBriefDispatchError('AMBIGUOUS')
+            : new IdeaDispatchError('AMBIGUOUS');
         throw terminalError;
       }
-      if (error instanceof IdeaCapacityError) throw error;
+      if (dispatchFailure) throw dispatchFailure;
+      if (error instanceof IdeaCapacityError || error instanceof ContentBriefCapacityError)
+        throw error;
       throw mapped;
     }
+  }
+
+  private async failBriefPreparation(
+    projectId: string,
+    command: Command,
+    idempotencyKey: string,
+    commandHash: string,
+    claim: BriefClaim,
+    error: unknown,
+  ) {
+    const failure = await inspectContentBriefPreDispatchFailure(
+      this.db,
+      this.actor,
+      projectId,
+      command.contentBriefRevisionCapacityId!,
+      claim.runId,
+      {
+        idempotencyKey,
+        commandHash,
+        ideaVersionId: command.inputArtifactVersionId,
+        environment: this.config.environment ?? 'runtime',
+      },
+    );
+    if (failure.dispatchOutcome !== 'NOT_COMMITTED') {
+      const winner = await this.existingRun(idempotencyKey);
+      if (winner && winner.status !== 'QUEUED' && this.commandHash(winner) === commandHash)
+        return { run: winner, idempotentReplay: true };
+      throw failure;
+    }
+    const at = now(),
+      auditId = newId('audit');
+    const metadata = {
+      commandHash,
+      contentBriefRevisionCapacityId: command.contentBriefRevisionCapacityId,
+      ...(claim.capacity.recoveryId
+        ? { contentBriefRevisionRecoveryId: claim.capacity.recoveryId }
+        : {}),
+      dispatchAuthorized: false,
+      providerCalls: 0,
+      ...(failure.rejection === 'ELIGIBILITY_REJECTED'
+        ? { preDispatchFailure: 'ELIGIBILITY_REJECTED' }
+        : { dispatchAuthorizationOutcome: 'NOT_COMMITTED', providerAdapterInvoked: false }),
+    };
+    try {
+      await this.db.batch([
+        contentBriefPreDispatchClaimStatement(
+          this.db,
+          this.actor,
+          projectId,
+          command.contentBriefRevisionCapacityId!,
+          command.inputArtifactVersionId,
+          this.config.environment ?? 'runtime',
+          claim.runId,
+          idempotencyKey,
+          commandHash,
+          true,
+        ),
+        this.db
+          .prepare(
+            `UPDATE editorial_execution_reservations SET status='CANCELLED',actual_microusd=0,reconciled_at=?
+          WHERE id=? AND intelligence_run_id=? AND status='RESERVED' AND dispatched_at IS NULL`,
+          )
+          .bind(at, claim.reservationId, claim.runId),
+        this.terminalAuditStatement(auditId, claim.runId, 'intelligence.run_failed', 'failure', at),
+        this.db
+          .prepare(
+            `UPDATE intelligence_runs SET status='FAILED_PERMANENT',error_category='PERMANENT',safe_error_detail=?,
+          input_units=0,output_units=0,actual_cost=0,currency='USD',safe_metadata_json=?,terminal_audit_event_id=?,
+          completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=? AND status='QUEUED'`,
+          )
+          .bind(
+            failure.message,
+            JSON.stringify(metadata),
+            auditId,
+            at,
+            at,
+            claim.runId,
+            this.actor.workspaceId,
+          ),
+      ]);
+    } catch {
+      const winner = await this.existingRun(idempotencyKey);
+      if (winner && winner.status !== 'QUEUED' && this.commandHash(winner) === commandHash)
+        return { run: winner, idempotentReplay: true };
+      throw new ContentBriefDispatchError('AMBIGUOUS');
+    }
+    throw failure.rejection ? failure : error;
   }
 
   async getRun(runId: string) {
@@ -1369,11 +1644,16 @@ export class EditorialExecutionService {
       costs: { actualCost: number | null; actualMicrousd: number | null; currency: string | null };
       metadata: Row;
       governed: boolean;
+      briefCapacityId?: string | undefined;
       reservedMicrousd: number | null;
     },
   ) {
     const at = now();
     const statements: D1PreparedStatement[] = [];
+    if (completion.briefCapacityId)
+      statements.push(
+        await contentBriefPublicationGuard(this.db, completion.briefCapacityId, runId),
+      );
     const createArtifact = async (
       type: string,
       value: unknown,
