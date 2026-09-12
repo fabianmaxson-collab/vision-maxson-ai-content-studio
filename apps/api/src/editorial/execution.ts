@@ -1,3 +1,4 @@
+import { calculateUsageMicrousd } from '@vision-maxson/domain';
 import {
   loadIdeaRevisionCapacity,
   authorizeIdeaRevisionDispatch,
@@ -663,7 +664,11 @@ export class EditorialExecutionService {
     let providerCompletion:
       | {
           result: ProviderExecutionResult;
-          costs: { actualCost: number | null; currency: string | null };
+          costs: {
+            actualCost: number | null;
+            actualMicrousd: number | null;
+            currency: string | null;
+          };
           metadata: Row;
           actualMicrousd: number | null;
         }
@@ -676,11 +681,12 @@ export class EditorialExecutionService {
         const metadata = {
           commandHash,
           ...result.safeMetadata,
+          actualMicrousd: costs.actualMicrousd,
+          accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
           cachedInputUnits: result.usage.cachedInputUnits,
           reasoningOutputUnits: result.usage.reasoningOutputUnits,
         };
-        const actualMicrousd =
-          costs.actualCost === null ? null : Math.ceil(costs.actualCost * 1_000_000);
+        const actualMicrousd = costs.actualMicrousd;
         providerCompletion = { result, costs, metadata, actualMicrousd };
         const completedAt = now();
         await this.db.batch([
@@ -753,6 +759,8 @@ export class EditorialExecutionService {
       const metadata = {
         commandHash,
         ...result.safeMetadata,
+        actualMicrousd: costs.actualMicrousd,
+        accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
         latencyMs: Date.now() - started,
         cachedInputUnits: result.usage.cachedInputUnits,
         reasoningOutputUnits: result.usage.reasoningOutputUnits,
@@ -790,7 +798,8 @@ export class EditorialExecutionService {
           status: 'SUCCEEDED',
           outputArtifactVersionId: outputVersionId,
           usage: result.usage,
-          ...costs,
+          actualCost: costs.actualCost,
+          currency: costs.currency,
         },
         idempotentReplay: false,
       };
@@ -864,7 +873,7 @@ export class EditorialExecutionService {
             )
             .bind(
               undispatchedIdea ? 'CANCELLED' : reconciledKnownCost ? 'RECONCILED' : 'AMBIGUOUS',
-              undispatchedIdea ? 0 : reconciledKnownCost ? knownActualMicrousd : null,
+              undispatchedIdea ? 0 : knownActualMicrousd,
               terminalAt,
               runId,
             ),
@@ -1289,16 +1298,22 @@ export class EditorialExecutionService {
     const cfg = parseCapabilities(row.capabilitiesJson);
     const cachedPrice =
       typeof cfg.cachedInputUnitPriceUsd === 'number' ? cfg.cachedInputUnitPriceUsd : null;
+    const actualMicrousd = calculateUsageMicrousd(
+      input,
+      output,
+      inputPrice,
+      outputPrice,
+      cached,
+      cachedPrice,
+      result.usage.reasoningOutputUnits ?? 0,
+    );
     return {
-      actualCost:
-        input === null || output === null || inputPrice === null || outputPrice === null
-          ? null
-          : (input - cached) * inputPrice +
-            (cachedPrice === null ? cached * inputPrice : cached * cachedPrice) +
-            output * outputPrice,
+      actualMicrousd,
+      actualCost: actualMicrousd === null ? null : actualMicrousd / 1_000_000,
       currency: typeof row.currency === 'string' ? row.currency : null,
     };
   }
+
   private async persist(
     projectId: string,
     task: Task,
@@ -1310,7 +1325,7 @@ export class EditorialExecutionService {
     output: unknown,
     completion: {
       result: ProviderExecutionResult;
-      costs: { actualCost: number | null; currency: string | null };
+      costs: { actualCost: number | null; actualMicrousd: number | null; currency: string | null };
       metadata: Row;
       governed: boolean;
       reservedMicrousd: number | null;
@@ -1703,10 +1718,7 @@ export class EditorialExecutionService {
         ),
     );
     if (completion.governed) {
-      const actualMicrousd =
-        completion.costs.actualCost === null
-          ? null
-          : Math.ceil(completion.costs.actualCost * 1_000_000);
+      const actualMicrousd = completion.costs.actualMicrousd;
       const reconciled =
         actualMicrousd !== null &&
         completion.reservedMicrousd !== null &&

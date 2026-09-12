@@ -871,6 +871,221 @@ function resolveRequestFixture(f: Awaited<ReturnType<typeof ready>>, auditId: st
 }
 
 describe('complete Idea revision execution and dispatch authorization', () => {
+  it('keeps a successful one-micro overrun ambiguous without enlarging its reservation', async () => {
+    const f = await ready();
+    f.database.exec(
+      `UPDATE ai_provider_models SET capabilities_json=json_set(capabilities_json,'$.cachedInputUnitPriceUsd',0.000001)`,
+    );
+    const r = await capacity(f).authorize(f.requestId, 'capacity', f.command);
+    const adapter = providerDouble().mockResolvedValue({
+      ...fakeIdeaResult,
+      usage: { ...fakeIdeaResult.usage, inputUnits: 5, cachedInputUnits: 1, outputUnits: 14826 },
+    });
+    const result = await executor(f).execute(
+      'project',
+      'IDEA_GENERATION',
+      executionCommand(r),
+      'one-micro-overrun',
+    );
+    expect(
+      f.database
+        .prepare(
+          'SELECT status,reserved_microusd,actual_microusd FROM editorial_execution_reservations WHERE intelligence_run_id=?',
+        )
+        .get(String(result.run.id)),
+    ).toEqual({ status: 'AMBIGUOUS', reserved_microusd: 177920, actual_microusd: 177921 });
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    f.database.close();
+  });
+  it.each([
+    [0, 14826, 177912, 'RECONCILED'],
+    [0, 14827, 177924, 'AMBIGUOUS'],
+    [-1, 0, null, 'AMBIGUOUS'],
+    [Number.MAX_SAFE_INTEGER, 0, null, 'AMBIGUOUS'],
+  ])(
+    'keeps reconciliation bounded for usage %s/%s',
+    async (inputUnits, outputUnits, actual, status) => {
+      const f = await ready();
+      const r = await capacity(f).authorize(f.requestId, 'capacity', f.command);
+      const adapter = providerDouble().mockResolvedValue({
+        ...fakeIdeaResult,
+        usage: { ...fakeIdeaResult.usage, inputUnits, outputUnits },
+      });
+      const execution = executor(f).execute(
+        'project',
+        'IDEA_GENERATION',
+        executionCommand(r),
+        'boundary-accounting',
+      );
+      if (inputUnits < 0) {
+        // Existing D1 usage constraints reject impossible provider usage. No
+        // negative charge or successful reconciliation may escape the batch.
+        await expect(execution).rejects.toThrow('CHECK constraint failed');
+        expect(
+          f.database
+            .prepare(
+              'SELECT actual_microusd,status FROM editorial_execution_reservations WHERE envelope_id=?',
+            )
+            .get(r.envelopeId),
+        ).toEqual({ actual_microusd: null, status: 'DISPATCHED' });
+        expect(adapter).toHaveBeenCalledTimes(1);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+        expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+        f.database.close();
+        return;
+      }
+      const result = await execution;
+      expect(
+        f.database
+          .prepare(
+            'SELECT status,actual_microusd FROM editorial_execution_reservations WHERE intelligence_run_id=?',
+          )
+          .get(String(result.run.id)),
+      ).toEqual({ status, actual_microusd: actual });
+      expect(adapter).toHaveBeenCalledTimes(1);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      f.database.close();
+    },
+  );
+  it.each([
+    [630, 1244, 16188, 'RECONCILED'],
+    [0, 14827, 177924, 'AMBIGUOUS'],
+    [Number.MAX_SAFE_INTEGER, 0, null, 'AMBIGUOUS'],
+  ])(
+    'preserves failure exposure for usage %s/%s',
+    async (inputUnits, outputUnits, actual, status) => {
+      const f = await ready();
+      const r = await capacity(f).authorize(f.requestId, 'capacity', f.command);
+      const adapter = providerDouble().mockResolvedValue({
+        ...fakeIdeaResult,
+        output: { items: [] },
+        usage: { ...fakeIdeaResult.usage, inputUnits, outputUnits },
+      });
+      await expect(
+        executor(f).execute(
+          'project',
+          'IDEA_GENERATION',
+          executionCommand(r),
+          'failed-output-accounting',
+        ),
+      ).rejects.toThrow();
+      const run = f.database
+        .prepare("SELECT * FROM intelligence_runs WHERE idempotency_key='failed-output-accounting'")
+        .get()!;
+      expect(run).toMatchObject({
+        status: 'FAILED_PERMANENT',
+        actual_cost: actual === null ? null : Number(actual) / 1_000_000,
+      });
+      expect(JSON.parse(String(run.safe_metadata_json))).toMatchObject({
+        actualMicrousd: actual,
+        accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
+      });
+      expect(
+        f.database
+          .prepare(
+            'SELECT status,reserved_microusd,actual_microusd FROM editorial_execution_reservations WHERE envelope_id=?',
+          )
+          .get(r.envelopeId),
+      ).toEqual({ status, reserved_microusd: 177920, actual_microusd: actual });
+      // Same exposure expression used by the persisted D1 budget/envelope guards.
+      for (const [column, id] of [
+        ['project_execution_budget_id', r.budgetId],
+        ['envelope_id', r.envelopeId],
+      ]) {
+        expect(
+          f.database
+            .prepare(
+              `SELECT SUM(CASE status WHEN 'RECONCILED' THEN actual_microusd WHEN 'CANCELLED' THEN 0 WHEN 'AMBIGUOUS' THEN MAX(reserved_microusd,COALESCE(actual_microusd,reserved_microusd)) ELSE reserved_microusd END) total FROM editorial_execution_reservations WHERE ${column}=?`,
+            )
+            .get(id!),
+        ).toEqual({ total: actual ?? 177920 });
+      }
+      expect(
+        f.database
+          .prepare('SELECT COUNT(*) n FROM audit_events WHERE id=?')
+          .get(String(run.terminal_audit_event_id)),
+      ).toEqual({ n: 1 });
+      expect(
+        f.database
+          .prepare('SELECT COUNT(*) n FROM editorial_idea_revision_capacity_recoveries')
+          .get(),
+      ).toEqual({ n: 0 });
+      expect(
+        f.database
+          .prepare('SELECT COUNT(*) n FROM intelligence_run_attempts WHERE intelligence_run_id=?')
+          .get(String(run.id)),
+      ).toEqual({ n: 1 });
+      await expect(
+        executor(f).execute(
+          'project',
+          'IDEA_GENERATION',
+          executionCommand(r),
+          'unauthorized-second-execution',
+        ),
+      ).rejects.toThrow();
+      expect(adapter).toHaveBeenCalledTimes(1);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      f.database.close();
+    },
+  );
+
+  it('reconciles the canonical 630/1244 usage identically in Run, reservation and budget', async () => {
+    const f = await ready();
+    const r = await capacity(f).authorize(f.requestId, 'capacity', f.command);
+    const adapter = providerDouble().mockResolvedValue({
+      ...fakeIdeaResult,
+      usage: { ...fakeIdeaResult.usage, inputUnits: 630, outputUnits: 1244 },
+    });
+    const result = await executor(f).execute(
+      'project',
+      'IDEA_GENERATION',
+      executionCommand(r),
+      'canonical-accounting',
+    );
+    expect(result.run).toMatchObject({
+      status: 'SUCCEEDED',
+      actualCost: 0.016188,
+      currency: 'USD',
+    });
+    const run = f.database
+      .prepare('SELECT actual_cost,safe_metadata_json FROM intelligence_runs WHERE id=?')
+      .get(String(result.run.id))!;
+    expect(run.actual_cost).toBe(0.016188);
+    expect(JSON.parse(String(run.safe_metadata_json))).toMatchObject({
+      actualMicrousd: 16188,
+      accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
+    });
+    expect(
+      f.database
+        .prepare(
+          'SELECT status,actual_microusd FROM editorial_execution_reservations WHERE intelligence_run_id=?',
+        )
+        .get(String(result.run.id)),
+    ).toEqual({ status: 'RECONCILED', actual_microusd: 16188 });
+    expect(
+      f.database
+        .prepare(
+          'SELECT SUM(actual_microusd) total FROM editorial_execution_reservations WHERE project_execution_budget_id=?',
+        )
+        .get(r.budgetId),
+    ).toEqual({ total: 16188 });
+    expect(
+      f.database
+        .prepare(
+          'SELECT SUM(actual_microusd) total FROM editorial_execution_reservations WHERE envelope_id=?',
+        )
+        .get(r.envelopeId),
+    ).toEqual({ total: 16188 });
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    f.database.close();
+  });
+
   it('persists one successful result, requires human selection/approval and replays once consumed', async () => {
     const f = await ready();
     const r = await capacity(f).authorize(f.requestId, 'capacity', f.command);
@@ -896,7 +1111,7 @@ describe('complete Idea revision execution and dispatch authorization', () => {
           'SELECT status,reserved_microusd,actual_microusd FROM editorial_execution_reservations WHERE envelope_id=?',
         )
         .get(r.envelopeId),
-    ).toEqual({ status: 'RECONCILED', reserved_microusd: 177920, actual_microusd: 261 });
+    ).toEqual({ status: 'RECONCILED', reserved_microusd: 177920, actual_microusd: 260 });
     expect(
       f.database
         .prepare('SELECT status FROM editorial_execution_envelopes WHERE id=?')
@@ -1480,7 +1695,7 @@ describe('one bounded recovery after a durable zero-provider failure', () => {
       expect(reservation).toEqual({
         status: 'RECONCILED',
         reserved_microusd: 177920,
-        actual_microusd: 261,
+        actual_microusd: 260,
       });
       expect(
         f.database
@@ -2940,7 +3155,7 @@ describe('9DR-R1 Research-authoritative Idea revision context', () => {
         project_execution_budget_id: r.budgetId,
         status: 'RECONCILED',
         reserved_microusd: 177920,
-        actual_microusd: 261,
+        actual_microusd: 260,
       });
       expect(reservation?.dispatched_at).toBeTypeOf('string');
       expect(

@@ -62,7 +62,11 @@ describe('Storyboard V2 failure observability', () => {
 
   it('reconciles known post-provider failures while preserving ambiguous unknown cost', () => {
     expect(execution).toContain("reconciledKnownCost ? 'RECONCILED' : 'AMBIGUOUS'");
-    expect(execution).toContain('reconciledKnownCost ? knownActualMicrousd : null');
+    expect(execution).toContain(
+      'const knownActualMicrousd = providerCompletion?.actualMicrousd ?? null',
+    );
+    expect(execution).toContain('undispatchedIdea ? 0 : knownActualMicrousd');
+    expect(execution).not.toContain('reconciledKnownCost ? knownActualMicrousd : null');
     expect(execution).toContain(
       "terminalStatus = mapped.retryable ? 'FAILED_RETRYABLE' : 'FAILED_PERMANENT'",
     );
