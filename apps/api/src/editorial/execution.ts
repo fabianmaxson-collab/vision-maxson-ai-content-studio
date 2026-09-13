@@ -59,7 +59,12 @@ import {
   loadGovernedTerminalEnvelope,
 } from './governed-budget';
 import { z } from 'zod';
-import { invalidationFor, type ArtifactType } from '@vision-maxson/domain';
+import {
+  invalidationFor,
+  terminalInvalidationPlan,
+  terminalStageSourceContracts,
+  type ArtifactType,
+} from '@vision-maxson/domain';
 import type { EditorialActor } from './repository';
 import { assertEditorialProductionReady, researchRemediationClaimGuard } from './readiness';
 
@@ -89,6 +94,15 @@ type LineageEdge = {
   sourceVersionId: string;
   dependencyType: 'GENERATED_FROM' | 'USES_RESEARCH' | 'EVALUATES_SOURCE' | 'INFORMED_BY';
 };
+type ScriptSourceBriefSnapshot = {
+  workspaceId: string;
+  projectId: string;
+  artifactId: string;
+  artifactRevision: number;
+  versionId: string;
+  contentHash: string;
+  approvalId: string;
+};
 const promptKey: Record<Task, string> = {
   TOPIC_RESEARCH: 'topic_research',
   IDEA_GENERATION: 'idea_generation',
@@ -111,7 +125,7 @@ const outputSchema: Record<Task, z.ZodType> = {
   STORYBOARD_PLANNER: storyboardOutputSchema,
   PREFLIGHT_ANALYSIS: z.object({ checks: z.array(z.unknown()), recommendation: z.string() }),
 };
-const artifactType: Record<Task, string> = {
+const artifactType: Record<Task, ArtifactType> = {
   TOPIC_RESEARCH: 'RESEARCH',
   IDEA_GENERATION: 'IDEA_CANDIDATE',
   CONTENT_BRIEF: 'CONTENT_BRIEF',
@@ -536,6 +550,19 @@ export class EditorialExecutionService {
       command.inputArtifactVersionId,
       command.ideaRevisionCapacityId !== undefined,
     );
+    const scriptSourceBrief =
+      task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG'
+        ? (project.scriptSourceBrief as ScriptSourceBriefSnapshot | undefined)
+        : undefined;
+    if (
+      (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG') &&
+      (!scriptSourceBrief || command.inputArtifactVersionId !== scriptSourceBrief.versionId)
+    )
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'The exact authoritative current approved Content Brief input is required.',
+      );
     if (task === 'SCRIPT_WRITER_SHORT' && project.format !== 'SHORT')
       throw new ProviderError(
         'PERMANENT',
@@ -745,12 +772,16 @@ export class EditorialExecutionService {
         at,
         at,
       );
+    const scriptSourceAuthorizationGuard = scriptSourceBrief
+      ? this.scriptSourceBriefGuard(scriptSourceBrief)
+      : undefined;
     if (!claimed && (boundedStep || governedStage) && envelope && reservedMicrousd !== null) {
       try {
         // For Research remediation, this batch commit is the durable authorization point.
         // Later editorial changes do not retroactively cancel an authorized provider attempt.
         await this.db.batch([
           ...(remediationClaimGuard ? [remediationClaimGuard] : []),
+          ...(scriptSourceAuthorizationGuard ? [scriptSourceAuthorizationGuard] : []),
           ...(briefCapacity
             ? [
                 await contentBriefClaimGuard(
@@ -816,7 +847,9 @@ export class EditorialExecutionService {
           false,
           'Revision-remediation Script execution requires an atomic Run and reservation claim.',
         );
-      await insertRun.run();
+      if (scriptSourceAuthorizationGuard)
+        await this.db.batch([scriptSourceAuthorizationGuard, insertRun]);
+      else await insertRun.run();
     }
     // A successful Brief claim inserted this Run and its reservation in the same transaction.
     // Duplicate claims reconcile in the catch above; the winning claim needs no extra read.
@@ -991,6 +1024,7 @@ export class EditorialExecutionService {
           metadata,
           governed: boundedStep || governedStage,
           briefCapacityId: command.contentBriefRevisionCapacityId,
+          scriptSourceBrief: scriptSourceBrief ?? null,
           reservedMicrousd,
         },
       );
@@ -1297,6 +1331,7 @@ export class EditorialExecutionService {
             .bind(projectId, this.actor.workspaceId)
             .all<Row>();
     const lineage: LineageEdge[] = [];
+    let scriptSourceBrief: ScriptSourceBriefSnapshot | null = null;
     let storyboardSourceSegments: Row[] = [];
     const exactCurrentApproved = async (versionId: string | null, artifactType: string) => {
       if (!versionId)
@@ -1424,6 +1459,43 @@ export class EditorialExecutionService {
         { sourceVersionId: String(research.versionId), dependencyType: 'USES_RESEARCH' },
       );
     }
+    if (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG') {
+      const brief = await this.db
+        .prepare(
+          `SELECT a.workspace_id workspaceId,a.project_id projectId,a.id artifactId,a.version artifactRevision,v.id versionId,v.content_hash contentHash,v.language_code languageCode,v.content_text contentText,v.content_json contentJson,a.artifact_type artifactType,
+             (SELECT ap.id FROM artifact_approvals ap WHERE ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED' ORDER BY ap.decided_at,ap.id LIMIT 1) approvalId
+           FROM editorial_artifact_versions v
+           JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id
+           WHERE v.id=? AND v.workspace_id=? AND a.workspace_id=? AND a.project_id=?
+             AND a.artifact_type='CONTENT_BRIEF' AND a.status='approved' AND a.deleted_at IS NULL
+             AND EXISTS(SELECT 1 FROM artifact_approvals ap WHERE ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED')`,
+        )
+        .bind(inputVersionId, this.actor.workspaceId, this.actor.workspaceId, projectId)
+        .first<ScriptSourceBriefSnapshot & Row>();
+      if (!brief)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The exact authoritative current approved Content Brief input is required.',
+        );
+      scriptSourceBrief = {
+        workspaceId: brief.workspaceId,
+        projectId: brief.projectId,
+        artifactId: brief.artifactId,
+        artifactRevision: Number(brief.artifactRevision),
+        versionId: brief.versionId,
+        contentHash: brief.contentHash,
+        approvalId: brief.approvalId,
+      };
+      artifacts.results = artifacts.results.filter(
+        (artifact) => artifact.artifactType !== 'CONTENT_BRIEF',
+      );
+      artifacts.results.push(brief);
+      lineage.push({
+        sourceVersionId: brief.versionId,
+        dependencyType: 'GENERATED_FROM',
+      });
+    }
     if (task === 'SCRIPT_CRITIC') {
       const script = await exactCurrentApproved(inputVersionId, 'PRODUCTION_SCRIPT');
       lineage.push({
@@ -1499,6 +1571,7 @@ export class EditorialExecutionService {
       exactSource,
       storyboardSourceSegments,
       lineage,
+      scriptSourceBrief,
       approvedArtifacts: artifacts.results.map((item) => ({
         ...item,
         contentText: typeof item.contentText === 'string' ? item.contentText : null,
@@ -1511,6 +1584,28 @@ export class EditorialExecutionService {
       storyboardSourceSegments: Row[];
       approvedArtifacts: Row[];
     };
+  }
+  private scriptSourceBriefGuard(snapshot: ScriptSourceBriefSnapshot) {
+    return this.db
+      .prepare(
+        `SELECT CASE WHEN EXISTS(
+          SELECT 1 FROM editorial_artifacts a
+          JOIN editorial_artifact_versions v ON v.id=? AND v.artifact_id=a.id AND v.workspace_id=a.workspace_id
+          JOIN artifact_approvals ap ON ap.id=? AND ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED'
+          WHERE a.id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='CONTENT_BRIEF'
+            AND a.current_version_id=v.id AND a.version=? AND a.status='approved' AND a.deleted_at IS NULL
+            AND v.content_hash=?
+        ) THEN 1 ELSE json('script_source_authorization_changed') END`,
+      )
+      .bind(
+        snapshot.versionId,
+        snapshot.approvalId,
+        snapshot.artifactId,
+        snapshot.workspaceId,
+        snapshot.projectId,
+        snapshot.artifactRevision,
+        snapshot.contentHash,
+      );
   }
   private commandHash(row: Row) {
     if (typeof row.safeMetadataJson !== 'string') return null;
@@ -1681,6 +1776,7 @@ export class EditorialExecutionService {
       metadata: Row;
       governed: boolean;
       briefCapacityId?: string | undefined;
+      scriptSourceBrief: ScriptSourceBriefSnapshot | null;
       reservedMicrousd: number | null;
     },
   ) {
@@ -1691,7 +1787,7 @@ export class EditorialExecutionService {
         await contentBriefPublicationGuard(this.db, completion.briefCapacityId, runId),
       );
     const createArtifact = async (
-      type: string,
+      type: ArtifactType,
       value: unknown,
       contentText: string | null,
       outputLanguage: string,
@@ -1702,18 +1798,20 @@ export class EditorialExecutionService {
           ? null
           : await this.db
               .prepare(
-                `SELECT a.id AS artifactId,a.current_version_id AS currentVersionId,v.version_number AS versionNumber FROM editorial_artifacts a LEFT JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.workspace_id=? AND a.project_id=? AND a.artifact_type=? AND a.deleted_at IS NULL LIMIT 1`,
+                `SELECT a.id AS artifactId,a.current_version_id AS currentVersionId,a.version AS artifactRevision,v.version_number AS versionNumber FROM editorial_artifacts a LEFT JOIN editorial_artifact_versions v ON v.id=a.current_version_id WHERE a.workspace_id=? AND a.project_id=? AND a.artifact_type=? AND a.deleted_at IS NULL LIMIT 1`,
               )
               .bind(this.actor.workspaceId, projectId, type)
               .first<{
                 artifactId: string;
                 currentVersionId: string | null;
+                artifactRevision: number;
                 versionNumber: number | null;
               }>();
       const artifactId = existing?.artifactId ?? newId('artifact');
       const versionId = newId('artifact_version');
       const versionNumber = Number(existing?.versionNumber ?? 0) + 1;
       const parentVersionId = existing?.currentVersionId ?? null;
+      const expectedArtifactRevision = Number(existing?.artifactRevision ?? 1);
       const content = JSON.stringify(value);
       const contentHash = await digest(value);
       if (!existing)
@@ -1733,39 +1831,105 @@ export class EditorialExecutionService {
               this.actor.id,
             ),
         );
-      const invalidations = type === 'CONTENT_BRIEF' ? ([] as typeof statements) : statements;
+      const invalidations: Array<{
+        id: string;
+        sourceVersionId: string;
+        dependentVersionId: string;
+        dependentArtifactId: string;
+        dependentArtifactRevision: number;
+        dependencyType: string;
+        artifactType: ArtifactType;
+        version: number;
+        expectedValidity: string;
+      }> = [];
       if (existing?.currentVersionId) {
         const dependents = await this.db
           .prepare(
-            `SELECT d.id,a.artifact_type artifactType FROM artifact_dependencies d JOIN editorial_artifact_versions v ON v.id=d.dependent_artifact_version_id JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE d.source_artifact_version_id=? AND d.workspace_id=? AND d.validity_status='CURRENT'`,
+            `SELECT d.id,d.source_artifact_version_id sourceVersionId,d.dependent_artifact_version_id dependentVersionId,d.dependency_type dependencyType,d.version,d.invalidated_at invalidatedAt,d.invalidated_by_version_id invalidatedByVersionId,a.id dependentArtifactId,a.workspace_id dependentWorkspaceId,a.project_id dependentProjectId,a.current_version_id dependentCurrentVersionId,a.version dependentArtifactRevision,a.deleted_at dependentDeletedAt,a.artifact_type artifactType FROM artifact_dependencies d JOIN editorial_artifact_versions v ON v.id=d.dependent_artifact_version_id JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE d.source_artifact_version_id=? AND d.workspace_id=? AND d.validity_status='CURRENT'`,
           )
           .bind(existing.currentVersionId, this.actor.workspaceId)
-          .all<{ id: string; artifactType: ArtifactType }>();
-        for (const dependent of dependents.results) {
-          invalidations.push(
-            this.db
-              .prepare(
-                `UPDATE artifact_dependencies SET validity_status=?,invalidated_at=?,invalidated_by_version_id=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,
-              )
-              .bind(
-                invalidationFor(dependent.artifactType),
-                at,
-                versionId,
-                at,
-                dependent.id,
-                this.actor.workspaceId,
-              ),
-          );
-          if (dependent.artifactType === 'PREFLIGHT')
-            invalidations.push(
-              this.db
-                .prepare(
-                  `UPDATE preflight_assessments SET generation_readiness='NOT_READY' WHERE artifact_version_id=(SELECT dependent_artifact_version_id FROM artifact_dependencies WHERE id=?) AND workspace_id=?`,
-                )
-                .bind(dependent.id, this.actor.workspaceId),
+          .all<{
+            id: string;
+            sourceVersionId: string;
+            dependentVersionId: string;
+            dependentArtifactId: string;
+            dependentWorkspaceId: string;
+            dependentProjectId: string;
+            dependentCurrentVersionId: string | null;
+            dependentArtifactRevision: number;
+            dependentDeletedAt: string | null;
+            dependencyType: string;
+            artifactType: ArtifactType;
+            version: number;
+            invalidatedAt: string | null;
+            invalidatedByVersionId: string | null;
+          }>();
+        if (type === 'PRODUCTION_SCRIPT') {
+          const plan = terminalInvalidationPlan(type);
+          const seenTypes = new Set<ArtifactType>();
+          for (const dependent of dependents.results) {
+            const effect = plan.effects.find(
+              (candidate) => candidate.artifactType === dependent.artifactType,
             );
+            const expectedDependencyType =
+              dependent.artifactType === 'REVIEW_TRANSLATION'
+                ? terminalStageSourceContracts.REVIEW_TRANSLATION[0].dependencyType
+                : dependent.artifactType === 'SCRIPT_CRITIQUE'
+                  ? terminalStageSourceContracts.SCRIPT_CRITIQUE[0].dependencyType
+                  : dependent.artifactType === 'STORYBOARD'
+                    ? terminalStageSourceContracts.STORYBOARD[0].dependencyType
+                    : dependent.artifactType === 'PREFLIGHT'
+                      ? terminalStageSourceContracts.PREFLIGHT.find(
+                          (contract) => contract.artifactType === 'PRODUCTION_SCRIPT',
+                        )?.dependencyType
+                      : undefined;
+            if (
+              !effect ||
+              !expectedDependencyType ||
+              seenTypes.has(dependent.artifactType) ||
+              dependent.sourceVersionId !== existing.currentVersionId ||
+              dependent.dependentWorkspaceId !== this.actor.workspaceId ||
+              dependent.dependentProjectId !== projectId ||
+              dependent.dependentCurrentVersionId !== dependent.dependentVersionId ||
+              dependent.dependentDeletedAt !== null ||
+              dependent.dependencyType !== expectedDependencyType ||
+              dependent.invalidatedAt !== null ||
+              dependent.invalidatedByVersionId !== null ||
+              invalidationFor(dependent.artifactType) !== effect.validity
+            )
+              throw new ProviderError(
+                'PERMANENT',
+                false,
+                'Current downstream dependency set is incompatible with the terminal invalidation plan.',
+              );
+            seenTypes.add(dependent.artifactType);
+            invalidations.push({ ...dependent, expectedValidity: effect.validity });
+          }
+        } else {
+          invalidations.push(
+            ...dependents.results.map((dependent) => ({
+              ...dependent,
+              expectedValidity: invalidationFor(dependent.artifactType),
+            })),
+          );
         }
       }
+      if (
+        type === 'PRODUCTION_SCRIPT' &&
+        (!completion.scriptSourceBrief ||
+          lineage.length !== 1 ||
+          inputVersionId === null ||
+          inputVersionId !== completion.scriptSourceBrief.versionId ||
+          lineage[0]?.sourceVersionId !== completion.scriptSourceBrief.versionId ||
+          lineage[0]?.dependencyType !==
+            terminalStageSourceContracts.PRODUCTION_SCRIPT[0].dependencyType)
+      )
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Production Script lineage is incompatible with the terminal source contract.',
+        );
+      // Insert the version before lineage or invalidations can reference its ID.
       statements.push(
         this.db
           .prepare(
@@ -1788,13 +1952,7 @@ export class EditorialExecutionService {
             at,
             this.actor.id,
           ),
-        this.db
-          .prepare(
-            `UPDATE editorial_artifacts SET current_version_id=?,status='active',updated_at=?,updated_by=?,version=version+1 WHERE id=? AND workspace_id=?`,
-          )
-          .bind(versionId, at, this.actor.id, artifactId, this.actor.workspaceId),
       );
-      if (type === 'CONTENT_BRIEF') statements.push(...invalidations);
       for (const edge of lineage)
         statements.push(
           this.db
@@ -1810,6 +1968,127 @@ export class EditorialExecutionService {
               at,
               at,
             ),
+        );
+      for (const dependent of invalidations) {
+        statements.push(
+          this.db
+            .prepare(
+              `UPDATE artifact_dependencies SET validity_status=?,invalidated_at=?,invalidated_by_version_id=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=? AND source_artifact_version_id=? AND dependent_artifact_version_id=? AND dependency_type=? AND validity_status='CURRENT' AND invalidated_at IS NULL AND invalidated_by_version_id IS NULL AND version=?`,
+            )
+            .bind(
+              dependent.expectedValidity,
+              at,
+              versionId,
+              at,
+              dependent.id,
+              this.actor.workspaceId,
+              parentVersionId,
+              dependent.dependentVersionId,
+              dependent.dependencyType,
+              dependent.version,
+            ),
+        );
+        if (dependent.artifactType === 'PREFLIGHT')
+          statements.push(
+            this.db
+              .prepare(
+                `UPDATE preflight_assessments SET generation_readiness='NOT_READY' WHERE artifact_version_id=? AND workspace_id=?`,
+              )
+              .bind(dependent.dependentVersionId, this.actor.workspaceId),
+          );
+      }
+      statements.push(
+        this.db
+          .prepare(
+            `UPDATE editorial_artifacts SET current_version_id=?,status='active',updated_at=?,updated_by=?,version=version+1 WHERE id=? AND workspace_id=? AND current_version_id IS ? AND version=?`,
+          )
+          .bind(
+            versionId,
+            at,
+            this.actor.id,
+            artifactId,
+            this.actor.workspaceId,
+            parentVersionId,
+            expectedArtifactRevision,
+          ),
+      );
+      if (type === 'PRODUCTION_SCRIPT')
+        statements.push(
+          ...lineage.map((edge) =>
+            this.db
+              .prepare(
+                `UPDATE editorial_artifacts SET id=CASE WHEN
+                  (SELECT COUNT(*) FROM artifact_dependencies d WHERE d.workspace_id=? AND d.dependent_artifact_version_id=?)=1
+                  AND EXISTS(SELECT 1 FROM artifact_dependencies d WHERE d.workspace_id=? AND d.source_artifact_version_id=? AND d.dependent_artifact_version_id=? AND d.dependency_type=? AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL)
+                  THEN id ELSE NULL END WHERE id=? AND workspace_id=?`,
+              )
+              .bind(
+                this.actor.workspaceId,
+                versionId,
+                this.actor.workspaceId,
+                edge.sourceVersionId,
+                versionId,
+                edge.dependencyType,
+                artifactId,
+                this.actor.workspaceId,
+              ),
+          ),
+          ...invalidations.map((dependent) =>
+            this.db
+              .prepare(
+                `UPDATE editorial_artifacts SET id=CASE WHEN EXISTS(
+                  SELECT 1 FROM artifact_dependencies d
+                  JOIN editorial_artifact_versions dv ON dv.id=d.dependent_artifact_version_id
+                  JOIN editorial_artifacts da ON da.id=dv.artifact_id
+                  WHERE d.id=? AND d.workspace_id=? AND d.source_artifact_version_id=? AND d.dependent_artifact_version_id=? AND d.dependency_type=? AND d.validity_status=? AND d.invalidated_at=? AND d.invalidated_by_version_id=? AND d.version=?
+                    AND dv.artifact_id=? AND da.workspace_id=? AND da.project_id=? AND da.artifact_type=? AND da.current_version_id=? AND da.deleted_at IS NULL AND da.version=?
+                ) THEN id ELSE NULL END WHERE id=? AND workspace_id=?`,
+              )
+              .bind(
+                dependent.id,
+                this.actor.workspaceId,
+                dependent.sourceVersionId,
+                dependent.dependentVersionId,
+                dependent.dependencyType,
+                dependent.expectedValidity,
+                at,
+                versionId,
+                dependent.version + 1,
+                dependent.dependentArtifactId,
+                this.actor.workspaceId,
+                projectId,
+                dependent.artifactType,
+                dependent.dependentVersionId,
+                dependent.dependentArtifactRevision,
+                artifactId,
+                this.actor.workspaceId,
+              ),
+          ),
+          this.db
+            .prepare(
+              `UPDATE editorial_artifacts SET id=CASE WHEN current_version_id=? AND version=?
+                AND EXISTS(SELECT 1 FROM editorial_artifact_versions v WHERE v.id=? AND v.artifact_id=editorial_artifacts.id AND v.parent_version_id IS ? AND v.version_number=?)
+                AND (SELECT COUNT(*) FROM artifact_dependencies d WHERE d.workspace_id=? AND d.source_artifact_version_id=? AND d.invalidated_by_version_id=? AND d.invalidated_at=?)=?
+                AND NOT EXISTS(SELECT 1 FROM artifact_dependencies d WHERE d.workspace_id=? AND d.source_artifact_version_id=? AND d.validity_status='CURRENT')
+                THEN id ELSE NULL END WHERE id=? AND workspace_id=?`,
+            )
+            .bind(
+              versionId,
+              expectedArtifactRevision + 1,
+              versionId,
+              parentVersionId,
+              versionNumber,
+              this.actor.workspaceId,
+              parentVersionId,
+              versionId,
+              at,
+              invalidations.length,
+              this.actor.workspaceId,
+              parentVersionId,
+              artifactId,
+              this.actor.workspaceId,
+            ),
+          this.scriptSourceBriefGuard(completion.scriptSourceBrief!),
         );
       return { artifactId, versionId };
     };
