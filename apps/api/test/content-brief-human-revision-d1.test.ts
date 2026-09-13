@@ -176,7 +176,7 @@ describe('Real SQL human revision atomic graph', () => {
     f.database.exec(
       "UPDATE editorial_artifacts SET status='approved',version=version+1 WHERE id='brief'",
     );
-    expect((await readiness()).blockers).toEqual(['OPEN_REVISION_REQUEST']);
+    expect((await readiness()).blockers).toEqual([]);
   });
   it.each([0, 1, 2, 3, 4, 5])('rolls back failure at batch statement %s', async (index) => {
     const before = snapshot(f);

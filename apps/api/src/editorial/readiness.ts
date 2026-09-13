@@ -18,6 +18,7 @@ export interface EditorialProductionReadiness {
   warnings: string[];
   evaluatedArtifactVersionIds: string[];
   evaluatedAt: string;
+  remediationIdentity?: ResearchRemediationIdentity;
 }
 type Row = Record<string, unknown>;
 
@@ -52,23 +53,23 @@ export async function evaluateEditorialProductionReadiness(
   actor: EditorialActor,
   projectId: string,
   checkpoint: EditorialReadinessCheckpoint,
-  options: { ignoreRevisionRequestId?: string } = {},
+  options: { ignoreRevisionRequestId?: string; inputArtifactVersionId?: string | null } = {},
 ): Promise<EditorialProductionReadiness> {
   await assertEditorialRevisionSchemaReady(db);
   const project = await db
     .prepare(
-      `SELECT id,primary_language primaryLanguage FROM projects WHERE id=? AND workspace_id=? AND deleted_at IS NULL`,
+      `SELECT id,version,primary_language primaryLanguage FROM projects WHERE id=? AND workspace_id=? AND deleted_at IS NULL`,
     )
     .bind(projectId, actor.workspaceId)
-    .first<{ id: string; primaryLanguage: string }>();
+    .first<{ id: string; version: number; primaryLanguage: string }>();
   if (!project) throw new Error('project_not_found');
 
   const artifacts = (
     await db
       .prepare(
-        `SELECT a.artifact_type artifactType,a.status,a.current_version_id versionId,v.content_json contentJson,v.source_script_version_id sourceScriptVersionId,
+        `SELECT a.id artifactId,a.version artifactRevision,v.content_hash contentHash,a.artifact_type artifactType,a.status,a.current_version_id versionId,v.content_json contentJson,v.source_script_version_id sourceScriptVersionId,
            EXISTS(SELECT 1 FROM artifact_approvals ap WHERE ap.workspace_id=a.workspace_id AND ap.artifact_version_id=a.current_version_id AND ap.decision='APPROVED') approved
-         FROM editorial_artifacts a JOIN editorial_artifact_versions v ON v.id=a.current_version_id
+         FROM editorial_artifacts a JOIN editorial_artifact_versions v ON v.id=a.current_version_id AND v.artifact_id=a.id AND v.workspace_id=a.workspace_id
          WHERE a.workspace_id=? AND a.project_id=? AND a.deleted_at IS NULL
            AND a.artifact_type<>'IDEA_CANDIDATE'`,
       )
@@ -137,11 +138,11 @@ export async function evaluateEditorialProductionReadiness(
   const selectedIdeas = (
     await db
       .prepare(
-        `SELECT a.artifact_type artifactType,a.status,a.current_version_id versionId,v.content_json contentJson,v.source_script_version_id sourceScriptVersionId,
+        `SELECT i.id candidateId,i.version candidateRevision,a.id artifactId,a.version artifactRevision,v.content_hash contentHash,a.artifact_type artifactType,a.status,a.current_version_id versionId,v.content_json contentJson,v.source_script_version_id sourceScriptVersionId,
            EXISTS(SELECT 1 FROM artifact_approvals ap WHERE ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED') approved
          FROM idea_candidates i
          JOIN editorial_artifacts a ON a.id=i.artifact_id
-         JOIN editorial_artifact_versions v ON v.id=i.artifact_version_id AND v.artifact_id=a.id
+         JOIN editorial_artifact_versions v ON v.id=i.artifact_version_id AND v.artifact_id=a.id AND v.workspace_id=i.workspace_id
          WHERE i.workspace_id=? AND i.project_id=? AND i.status='SELECTED'
            AND a.workspace_id=i.workspace_id AND a.project_id=i.project_id
            AND a.artifact_type='IDEA_CANDIDATE' AND a.current_version_id=i.artifact_version_id
@@ -234,7 +235,49 @@ export async function evaluateEditorialProductionReadiness(
     await requireDependency(critique, storyboard, 'INFORMED_BY');
   }
 
+  // Preliminary reads can only deny eligibility. This single authoritative read proves
+  // the exact captured identities NOW, and its predicate is reused by the atomic claim.
+  let remediationIdentity: ResearchRemediationIdentity | undefined;
+  if (
+    checkpoint === 'BEFORE_PRODUCTION_SCRIPT' &&
+    !options.ignoreRevisionRequestId &&
+    openRevision &&
+    blockers.size === 1 &&
+    blockers.has('OPEN_REVISION_REQUEST') &&
+    (options.inputArtifactVersionId === undefined ||
+      options.inputArtifactVersionId === brief?.versionId) &&
+    research &&
+    idea &&
+    brief
+  ) {
+    const identity: ResearchRemediationIdentity = {
+      workspaceId: actor.workspaceId,
+      projectId,
+      projectVersion: project.version,
+      requestId: openRevision.id,
+      researchArtifactId: String(research.artifactId),
+      researchVersionId: String(research.versionId),
+      researchRevision: Number(research.artifactRevision),
+      researchHash: String(research.contentHash),
+      ideaArtifactId: String(idea.artifactId),
+      ideaVersionId: String(idea.versionId),
+      ideaRevision: Number(idea.artifactRevision),
+      ideaHash: String(idea.contentHash),
+      candidateId: String(idea.candidateId),
+      candidateRevision: Number(idea.candidateRevision),
+      briefArtifactId: String(brief.artifactId),
+      briefVersionId: String(brief.versionId),
+      briefRevision: Number(brief.artifactRevision),
+      briefHash: String(brief.contentHash),
+    };
+    if (await remediationStatement(db, identity, false).first()) {
+      blockers.delete('OPEN_REVISION_REQUEST');
+      remediationIdentity = identity;
+    }
+  }
+
   return {
+    ...(remediationIdentity ? { remediationIdentity } : {}),
     ready: blockers.size === 0,
     checkpoint,
     blockers: [...blockers].sort(),
@@ -246,13 +289,115 @@ export async function evaluateEditorialProductionReadiness(
   };
 }
 
+// Internal identity captured by server-side discovery, never accepted from an API command.
+export interface ResearchRemediationIdentity {
+  workspaceId: string;
+  projectId: string;
+  projectVersion: number;
+  requestId: string;
+  researchArtifactId: string;
+  researchVersionId: string;
+  researchRevision: number;
+  researchHash: string;
+  ideaArtifactId: string;
+  ideaVersionId: string;
+  ideaRevision: number;
+  ideaHash: string;
+  candidateId: string;
+  candidateRevision: number;
+  briefArtifactId: string;
+  briefVersionId: string;
+  briefRevision: number;
+  briefHash: string;
+}
+const remediationIdentityKeys = [
+  'workspaceId',
+  'projectId',
+  'projectVersion',
+  'requestId',
+  'researchArtifactId',
+  'researchVersionId',
+  'researchRevision',
+  'researchHash',
+  'ideaArtifactId',
+  'ideaVersionId',
+  'ideaRevision',
+  'ideaHash',
+  'candidateId',
+  'candidateRevision',
+  'briefArtifactId',
+  'briefVersionId',
+  'briefRevision',
+  'briefHash',
+] as const satisfies readonly (keyof ResearchRemediationIdentity)[];
+
+const remediationQuery = `WITH e AS (SELECT ${remediationIdentityKeys.map((key) => `? AS ${key}`).join(',')})
+ SELECT r.id FROM e
+ JOIN projects p ON p.id=e.projectId AND p.workspace_id=e.workspaceId AND p.version=e.projectVersion AND p.deleted_at IS NULL
+ JOIN editorial_revision_requests r ON r.id=e.requestId AND r.workspace_id=e.workspaceId AND r.project_id=e.projectId
+ JOIN editorial_artifact_versions baseline ON baseline.id=r.target_baseline_version_id AND baseline.workspace_id=e.workspaceId AND baseline.artifact_id=e.researchArtifactId
+ JOIN editorial_artifact_versions reviewed ON reviewed.id=r.reviewed_artifact_version_id AND reviewed.workspace_id=e.workspaceId AND reviewed.artifact_id=r.reviewed_artifact_id
+ JOIN editorial_artifacts sa ON sa.id=reviewed.artifact_id AND sa.workspace_id=e.workspaceId AND sa.project_id=e.projectId AND sa.artifact_type='STORYBOARD' AND sa.deleted_at IS NULL
+ JOIN editorial_artifacts ra ON ra.id=e.researchArtifactId AND ra.workspace_id=e.workspaceId AND ra.project_id=e.projectId AND ra.artifact_type='RESEARCH' AND ra.current_version_id=e.researchVersionId AND ra.version=e.researchRevision AND ra.status='approved' AND ra.deleted_at IS NULL
+ JOIN editorial_artifact_versions rv ON rv.id=e.researchVersionId AND rv.artifact_id=ra.id AND rv.workspace_id=e.workspaceId AND rv.content_hash=e.researchHash
+ JOIN editorial_artifacts ia ON ia.id=e.ideaArtifactId AND ia.workspace_id=e.workspaceId AND ia.project_id=e.projectId AND ia.artifact_type='IDEA_CANDIDATE' AND ia.current_version_id=e.ideaVersionId AND ia.version=e.ideaRevision AND ia.status='approved' AND ia.deleted_at IS NULL
+ JOIN editorial_artifact_versions iv ON iv.id=e.ideaVersionId AND iv.artifact_id=ia.id AND iv.workspace_id=e.workspaceId AND iv.content_hash=e.ideaHash
+ JOIN idea_candidates i ON i.id=e.candidateId AND i.workspace_id=e.workspaceId AND i.project_id=e.projectId AND i.artifact_id=ia.id AND i.artifact_version_id=iv.id AND i.version=e.candidateRevision AND i.status='SELECTED'
+ JOIN editorial_artifacts ba ON ba.id=e.briefArtifactId AND ba.workspace_id=e.workspaceId AND ba.project_id=e.projectId AND ba.artifact_type='CONTENT_BRIEF' AND ba.current_version_id=e.briefVersionId AND ba.version=e.briefRevision AND ba.status='approved' AND ba.deleted_at IS NULL
+ JOIN editorial_artifact_versions bv ON bv.id=e.briefVersionId AND bv.artifact_id=ba.id AND bv.workspace_id=e.workspaceId AND bv.content_hash=e.briefHash
+ WHERE r.status='OPEN' AND r.target_stage='RESEARCH' AND baseline.id<>rv.id
+ AND NOT EXISTS(SELECT 1 FROM editorial_revision_request_resolutions x WHERE x.revision_request_id=r.id)
+ AND (SELECT COUNT(*) FROM editorial_revision_requests q WHERE q.workspace_id=e.workspaceId AND q.project_id=e.projectId AND NOT EXISTS(SELECT 1 FROM editorial_revision_request_resolutions x WHERE x.revision_request_id=q.id))=1
+ AND (SELECT COUNT(*) FROM editorial_artifacts a WHERE a.workspace_id=e.workspaceId AND a.project_id=e.projectId AND a.artifact_type='RESEARCH' AND a.deleted_at IS NULL)=1
+ AND (SELECT COUNT(*) FROM editorial_artifacts a WHERE a.workspace_id=e.workspaceId AND a.project_id=e.projectId AND a.artifact_type='CONTENT_BRIEF' AND a.deleted_at IS NULL)=1
+ AND (SELECT COUNT(*) FROM idea_candidates c WHERE c.workspace_id=e.workspaceId AND c.project_id=e.projectId AND c.status='SELECTED')=1
+ AND EXISTS(SELECT 1 FROM artifact_approvals ap WHERE ap.workspace_id=e.workspaceId AND ap.artifact_version_id=rv.id AND ap.decision='APPROVED')
+ AND EXISTS(SELECT 1 FROM artifact_approvals ap WHERE ap.workspace_id=e.workspaceId AND ap.artifact_version_id=iv.id AND ap.decision='APPROVED')
+ AND EXISTS(SELECT 1 FROM artifact_approvals ap WHERE ap.workspace_id=e.workspaceId AND ap.artifact_version_id=bv.id AND ap.decision='APPROVED')
+ AND CASE WHEN json_valid(bv.content_json) THEN json_type(bv.content_json,'$.researchVersionIds')='array' AND json_array_length(bv.content_json,'$.researchVersionIds')=1 AND json_extract(bv.content_json,'$.researchVersionIds[0]')=rv.id ELSE 0 END
+ AND EXISTS(SELECT 1 FROM research_claims c WHERE c.workspace_id=e.workspaceId AND c.research_version_id=rv.id)
+ AND NOT EXISTS(SELECT 1 FROM research_claims c WHERE c.research_version_id=rv.id AND (c.workspace_id<>e.workspaceId OR NOT EXISTS(SELECT 1 FROM research_sources s WHERE s.id=c.source_id AND s.workspace_id=e.workspaceId AND s.research_version_id=rv.id AND s.verification_status IN ('owner_approved','externally_verified'))))
+ AND EXISTS(SELECT 1 FROM artifact_dependencies d WHERE d.workspace_id=e.workspaceId AND d.source_artifact_version_id=rv.id AND d.dependent_artifact_version_id=iv.id AND d.dependency_type='GENERATED_FROM' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL)
+ AND EXISTS(SELECT 1 FROM artifact_dependencies d WHERE d.workspace_id=e.workspaceId AND d.source_artifact_version_id=iv.id AND d.dependent_artifact_version_id=bv.id AND d.dependency_type='GENERATED_FROM' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL)
+ AND EXISTS(SELECT 1 FROM artifact_dependencies d WHERE d.workspace_id=e.workspaceId AND d.source_artifact_version_id=rv.id AND d.dependent_artifact_version_id=bv.id AND d.dependency_type='USES_RESEARCH' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL)
+ AND NOT EXISTS(SELECT 1 FROM artifact_dependencies d WHERE d.dependent_artifact_version_id IN (rv.id,iv.id,bv.id) AND (d.workspace_id<>e.workspaceId OR d.validity_status<>'CURRENT' OR d.invalidated_at IS NOT NULL OR d.invalidated_by_version_id IS NOT NULL))
+ AND (SELECT COUNT(*) FROM artifact_dependencies d WHERE d.dependent_artifact_version_id=iv.id AND d.dependency_type='GENERATED_FROM')=1
+ AND (SELECT COUNT(*) FROM artifact_dependencies d WHERE d.dependent_artifact_version_id=bv.id AND d.dependency_type='GENERATED_FROM')=1
+ AND (SELECT COUNT(*) FROM artifact_dependencies d WHERE d.dependent_artifact_version_id=bv.id AND d.dependency_type='USES_RESEARCH')=1`;
+
+function remediationStatement(
+  db: D1Database,
+  identity: ResearchRemediationIdentity,
+  claim: boolean,
+) {
+  return db
+    .prepare(
+      claim
+        ? `SELECT CASE WHEN EXISTS(${remediationQuery}) THEN 1 ELSE json('research_remediation_claim_changed') END`
+        : remediationQuery,
+    )
+    .bind(...remediationIdentityKeys.map((key) => identity[key]));
+}
+
+// Must execute in the SAME D1 batch as the Run/reservation claim. A failed guard
+// aborts the transaction; eligibility is not a durable authorization until commit.
+export function researchRemediationClaimGuard(
+  db: D1Database,
+  identity: ResearchRemediationIdentity,
+) {
+  return remediationStatement(db, identity, true);
+}
+
 export async function assertEditorialProductionReady(
   db: D1Database,
   actor: EditorialActor,
   projectId: string,
   checkpoint: EditorialReadinessCheckpoint,
+  inputArtifactVersionId?: string | null,
 ) {
-  const result = await evaluateEditorialProductionReadiness(db, actor, projectId, checkpoint);
+  const result = await evaluateEditorialProductionReadiness(db, actor, projectId, checkpoint, {
+    ...(inputArtifactVersionId !== undefined ? { inputArtifactVersionId } : {}),
+  });
   if (!result.ready) throw new Error(`editorial_production_not_ready:${result.blockers.join(',')}`);
   return result;
 }

@@ -43,6 +43,7 @@ import {
 import { OpenAIResponsesAdapter } from '@vision-maxson/providers/openai';
 import { taskPolicy } from '@vision-maxson/providers/policy';
 import {
+  PHASE3_SHORT_DE_REVIEW_ES_PROFILE,
   boundedProfileForProject,
   conservativeInputTokenUpperBound,
   isBoundedProfileStep,
@@ -60,7 +61,7 @@ import {
 import { z } from 'zod';
 import { invalidationFor, type ArtifactType } from '@vision-maxson/domain';
 import type { EditorialActor } from './repository';
-import { assertEditorialProductionReady } from './readiness';
+import { assertEditorialProductionReady, researchRemediationClaimGuard } from './readiness';
 
 type Task = z.infer<typeof intelligenceTaskSchema>;
 type ExecutionConfig = {
@@ -510,13 +511,21 @@ export class EditorialExecutionService {
         false,
         'Remediation execution is only supported for Storyboard.',
       );
-    if (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG')
-      await assertEditorialProductionReady(
+    let remediationClaimGuard: D1PreparedStatement | undefined;
+    if (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG') {
+      const readiness = await assertEditorialProductionReady(
         this.db,
         this.actor,
         projectId,
         'BEFORE_PRODUCTION_SCRIPT',
+        command.inputArtifactVersionId ?? null,
       );
+      if (readiness.remediationIdentity)
+        remediationClaimGuard = researchRemediationClaimGuard(
+          this.db,
+          readiness.remediationIdentity,
+        );
+    }
     if (task === 'STORYBOARD_PLANNER')
       await assertEditorialProductionReady(this.db, this.actor, projectId, 'BEFORE_STORYBOARD');
     if (!this.config.openAIEnabled || !this.config.openAIApiKey)
@@ -621,6 +630,21 @@ export class EditorialExecutionService {
       isBoundedProfileStep(task) &&
       selected.providerKey === boundedProfile.providerKey &&
       selected.modelKey === boundedProfile.modelKey;
+    const executionClass = remediationClaimGuard
+      ? 'REVISION_REMEDIATION_BOUNDED_REQUIRED'
+      : 'ORDINARY';
+    if (
+      executionClass === 'REVISION_REMEDIATION_BOUNDED_REQUIRED' &&
+      (!boundedStep ||
+        task !== 'SCRIPT_WRITER_SHORT' ||
+        boundedProfile?.key !== PHASE3_SHORT_DE_REVIEW_ES_PROFILE ||
+        boundedProfile.version !== 1)
+    )
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'Revision-remediation Script execution requires the governed bounded profile and an authorized execution envelope.',
+      );
     if ((boundedStep || isGovernedTerminalStage(task)) && command.creativeRegeneration)
       throw new ProviderError(
         'PERMANENT',
@@ -723,7 +747,10 @@ export class EditorialExecutionService {
       );
     if (!claimed && (boundedStep || governedStage) && envelope && reservedMicrousd !== null) {
       try {
+        // For Research remediation, this batch commit is the durable authorization point.
+        // Later editorial changes do not retroactively cancel an authorized provider attempt.
         await this.db.batch([
+          ...(remediationClaimGuard ? [remediationClaimGuard] : []),
           ...(briefCapacity
             ? [
                 await contentBriefClaimGuard(
@@ -781,7 +808,16 @@ export class EditorialExecutionService {
           'The execution step could not be reserved atomically.',
         );
       }
-    } else if (!claimed) await insertRun.run();
+    } else if (!claimed) {
+      // Remediation has no Run-only authorization path, even if claim routing changes.
+      if (remediationClaimGuard)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Revision-remediation Script execution requires an atomic Run and reservation claim.',
+        );
+      await insertRun.run();
+    }
     // A successful Brief claim inserted this Run and its reservation in the same transaction.
     // Duplicate claims reconcile in the catch above; the winning claim needs no extra read.
     const reserved: Row | null = briefCapacity
