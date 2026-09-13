@@ -216,6 +216,32 @@ export const contentBriefSchema = z.object({
   researchVersionIds: z.array(id).max(50),
   userNotes: z.string().max(8000),
 });
+export const contentBriefHumanRevisionSchema = z
+  .object({
+    expectedArtifactRevision: z.number().int().positive(),
+    changes: z
+      .object({
+        objective: z.string().min(1).max(1000),
+        narrativeAngle: z.string().min(1).max(4000),
+        hook: z.string().min(1).max(4000),
+        visualDirection: z.string().min(1).max(8000),
+        editorialConstraints: z.array(z.string().min(1).max(2000)).min(1).max(50),
+      })
+      .strict()
+      .refine(
+        (changes) =>
+          [
+            changes.objective,
+            changes.narrativeAngle,
+            changes.hook,
+            changes.visualDirection,
+            ...changes.editorialConstraints,
+          ].every((value) => value.trim().length > 0),
+        'Corrections must not be empty',
+      ),
+  })
+  .strict();
+export type ContentBriefHumanRevisionCommand = z.infer<typeof contentBriefHumanRevisionSchema>;
 const critiqueIssue = z.object({
   dimension: z.string().max(100),
   issue: z.string().max(4000),

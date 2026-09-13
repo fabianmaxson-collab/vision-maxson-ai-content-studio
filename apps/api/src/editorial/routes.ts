@@ -1,4 +1,9 @@
 import {
+  ContentBriefHumanRevisionService,
+  ContentBriefHumanRevisionError,
+} from './content-brief-human-revision';
+import { contentBriefHumanRevisionSchema } from '@vision-maxson/contracts';
+import {
   ContentBriefRevisionCapacityService,
   ContentBriefCapacityError,
 } from './content-brief-revision-capacity';
@@ -780,6 +785,37 @@ editorialRoutes.post(
         error instanceof ContentBriefCapacityError
           ? error.message
           : 'Content Brief revision recovery failed.',
+      );
+    }
+  },
+);
+
+editorialRoutes.post(
+  '/editorial-artifact-versions/:versionId/human-revision',
+  requirePermission('editorial:write'),
+  async (c) => {
+    const versionId = c.req.param('versionId');
+    const key = c.req.header('Idempotency-Key')?.trim();
+    const parsed = contentBriefHumanRevisionSchema.safeParse(await c.req.json().catch(() => null));
+    if (!validRevisionRouteId(versionId) || !key || key.length > 200 || !parsed.success)
+      return problem(c, 422, 'Validation Failed', 'Invalid Content Brief human revision request.');
+    try {
+      const identity = c.get('identity');
+      const result = await new ContentBriefHumanRevisionService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).create(versionId, key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      return problem(
+        c,
+        error instanceof ContentBriefHumanRevisionError ? error.status : 500,
+        'Validation Failed',
+        error instanceof ContentBriefHumanRevisionError
+          ? error.message
+          : 'Content Brief human revision could not be completed.',
       );
     }
   },
