@@ -67,6 +67,16 @@ import {
 } from '@vision-maxson/domain';
 import type { EditorialActor } from './repository';
 import { assertEditorialProductionReady, researchRemediationClaimGuard } from './readiness';
+import {
+  authorizeProductionScriptRetryDispatch,
+  loadProductionScriptRetryAuthorization,
+  productionScriptRetryClaimAudit,
+  legacyRemediationClaimStatement,
+  productionScriptRetryClaimGuard,
+  productionScriptRetryRequired,
+  ProductionScriptRetryError,
+  PRODUCTION_SCRIPT_RETRY_CEILING,
+} from './production-script-retry-authorization';
 
 type Task = z.infer<typeof intelligenceTaskSchema>;
 type ExecutionConfig = {
@@ -87,6 +97,7 @@ type Command = {
   remediationId?: string;
   ideaRevisionCapacityId?: string;
   contentBriefRevisionCapacityId?: string;
+  productionScriptRetryAuthorizationId?: string;
 };
 type Row = Record<string, unknown>;
 type BriefClaim = Awaited<ReturnType<typeof loadContentBriefPreDispatchClaim>>;
@@ -496,6 +507,19 @@ export class EditorialExecutionService {
         false,
         'Invalid Content Brief revision execution policy.',
       );
+    if (
+      command.productionScriptRetryAuthorizationId &&
+      (task !== 'SCRIPT_WRITER_SHORT' ||
+        command.ideaRevisionCapacityId ||
+        command.contentBriefRevisionCapacityId ||
+        command.remediationId ||
+        command.mode !== 'LOCKED' ||
+        command.preferredProviderKey !== 'openai' ||
+        command.preferredModelKey !== 'gpt-5.6-luna' ||
+        command.creativeRegeneration ||
+        !command.inputArtifactVersionId)
+    )
+      throw new ProductionScriptRetryError(422, 'production_script_retry_execution_policy_invalid');
     const briefCapacity =
       claimed?.capacity ??
       (command.contentBriefRevisionCapacityId
@@ -526,6 +550,7 @@ export class EditorialExecutionService {
         'Remediation execution is only supported for Storyboard.',
       );
     let remediationClaimGuard: D1PreparedStatement | undefined;
+    let scriptRetryAuthorization: Row | null = null;
     if (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG') {
       const readiness = await assertEditorialProductionReady(
         this.db,
@@ -534,11 +559,39 @@ export class EditorialExecutionService {
         'BEFORE_PRODUCTION_SCRIPT',
         command.inputArtifactVersionId ?? null,
       );
-      if (readiness.remediationIdentity)
+      if (readiness.remediationIdentity) {
         remediationClaimGuard = researchRemediationClaimGuard(
           this.db,
           readiness.remediationIdentity,
         );
+        const retryRequired = await productionScriptRetryRequired(
+          this.db,
+          this.actor,
+          projectId,
+          readiness.remediationIdentity,
+        );
+        if (retryRequired && !command.productionScriptRetryAuthorizationId)
+          throw new ProductionScriptRetryError(
+            409,
+            'production_script_retry_authorization_required',
+          );
+        if (!retryRequired && command.productionScriptRetryAuthorizationId)
+          throw new ProductionScriptRetryError(409, 'production_script_retry_not_applicable');
+        if (command.productionScriptRetryAuthorizationId)
+          scriptRetryAuthorization = await loadProductionScriptRetryAuthorization(
+            this.db,
+            this.actor,
+            projectId,
+            command.productionScriptRetryAuthorizationId,
+            readiness.remediationIdentity,
+            idempotencyKey,
+            this.config.environment ?? 'runtime',
+          );
+      } else if (command.productionScriptRetryAuthorizationId) {
+        throw new ProductionScriptRetryError(409, 'production_script_retry_not_applicable');
+      }
+    } else if (command.productionScriptRetryAuthorizationId) {
+      throw new ProductionScriptRetryError(409, 'production_script_retry_not_applicable');
     }
     if (task === 'STORYBOARD_PLANNER')
       await assertEditorialProductionReady(this.db, this.actor, projectId, 'BEFORE_STORYBOARD');
@@ -609,6 +662,12 @@ export class EditorialExecutionService {
         `SELECT p.id AS providerId,p.key AS providerKey,m.id AS modelId,m.model_key AS modelKey,m.capabilities_json AS capabilitiesJson,m.status,ps.id AS pricingSnapshotId,ps.input_unit_price AS inputPrice,ps.output_unit_price AS outputPrice,ps.currency,ps.unit_name AS unitName,ps.verification_status AS verificationStatus,ps.effective_from AS effectiveFrom,ps.effective_to AS effectiveTo FROM ai_providers p JOIN ai_provider_models m ON m.provider_id=p.id LEFT JOIN ai_pricing_snapshots ps ON ps.provider_model_id=m.id AND ps.effective_to IS NULL WHERE p.status='configured' AND m.status='available'`,
       )
       .all<Row>();
+    if (scriptRetryAuthorization)
+      modelRows.results = modelRows.results.filter(
+        (row) =>
+          row.modelId === scriptRetryAuthorization.provider_model_id &&
+          row.pricingSnapshotId === scriptRetryAuthorization.pricing_snapshot_id,
+      );
     if (revisionCapacity)
       modelRows.results = modelRows.results.filter(
         (row) =>
@@ -713,6 +772,7 @@ export class EditorialExecutionService {
         'Provider-bound input exceeds the execution profile ceiling.',
       );
     const envelope =
+      scriptRetryAuthorization ??
       revisionCapacity ??
       (boundedStep
         ? await loadBoundedEnvelope(this.db, this.actor, projectId, selected, boundedProfile)
@@ -733,8 +793,37 @@ export class EditorialExecutionService {
       : governedStage
         ? calculateGovernedReservation(selectedRow, task)
         : null;
+    // Bind the actual dispatch controls to the immutable SQL policy, at both transaction boundaries.
+    const retryExecutionPolicyJson = scriptRetryAuthorization
+      ? JSON.stringify([
+          selectedRow.providerId,
+          selected.providerKey,
+          selectedRow.modelId,
+          selected.modelKey,
+          prompt.id,
+          selectedRow.pricingSnapshotId,
+          task,
+          stepPolicy.reasoningEffort,
+          scriptRetryAuthorization.maximum_calls,
+          stepPolicy.maximumAttempts,
+          0,
+          Number(boundedProfile?.fallbackAllowed),
+          reservedMicrousd,
+          Number(command.creativeRegeneration),
+          0,
+          Number(boundedProfile?.externalResearchAllowed),
+          Number(boundedProfile?.humanReviewRequired),
+          stepPolicy.maxOutputTokens,
+          inputCeiling,
+          stepPolicy.timeoutMs,
+          boundedProfile?.key,
+          boundedProfile?.version,
+          command.mode,
+        ])
+      : null;
     const runId = claimed?.runId ?? newId('intelligence_run'),
       at = now();
+    const retryReservationId = scriptRetryAuthorization ? newId('execution_reservation') : null;
     const regeneration = command.creativeRegeneration ? 1 : 0;
     const insertRun = this.db
       .prepare(
@@ -755,6 +844,12 @@ export class EditorialExecutionService {
         regeneration,
         JSON.stringify({
           commandHash,
+          ...(scriptRetryAuthorization
+            ? {
+                productionScriptRetryAuthorizationId: command.productionScriptRetryAuthorizationId,
+                failedProductionScriptRunId: scriptRetryAuthorization.failed_run_id,
+              }
+            : {}),
           ...(revisionCapacity
             ? {
                 [briefCapacity ? 'contentBriefRevisionCapacityId' : 'ideaRevisionCapacityId']:
@@ -781,6 +876,17 @@ export class EditorialExecutionService {
         // Later editorial changes do not retroactively cancel an authorized provider attempt.
         await this.db.batch([
           ...(remediationClaimGuard ? [remediationClaimGuard] : []),
+          ...(scriptRetryAuthorization
+            ? [
+                productionScriptRetryClaimGuard(
+                  this.db,
+                  command.productionScriptRetryAuthorizationId!,
+                  this.actor,
+                  projectId,
+                  retryExecutionPolicyJson!,
+                ),
+              ]
+            : []),
           ...(scriptSourceAuthorizationGuard ? [scriptSourceAuthorizationGuard] : []),
           ...(briefCapacity
             ? [
@@ -795,20 +901,62 @@ export class EditorialExecutionService {
               ]
             : []),
           insertRun,
-          reservationStatement(this.db, {
-            envelopeId: String(envelope.id),
-            workspaceId: this.actor.workspaceId,
-            projectId,
-            runId,
-            step: task,
-            pricingSnapshotId: String(selectedRow.pricingSnapshotId),
-            reservedMicrousd,
-            at,
-            projectExecutionBudgetId: governedStage
-              ? String(envelope.projectExecutionBudgetId)
-              : null,
-          }),
-          ...(briefCapacity
+          ...(scriptRetryAuthorization
+            ? [
+                this.db
+                  .prepare(
+                    `INSERT INTO editorial_execution_reservations(id,envelope_id,workspace_id,project_id,intelligence_run_id,step_key,pricing_snapshot_id,reserved_microusd,status,created_at,project_execution_budget_id) VALUES(?,?,?,?,?,?,?,?,'RESERVED',?,?)`,
+                  )
+                  .bind(
+                    retryReservationId,
+                    envelope.id,
+                    this.actor.workspaceId,
+                    projectId,
+                    runId,
+                    task,
+                    selectedRow.pricingSnapshotId,
+                    PRODUCTION_SCRIPT_RETRY_CEILING,
+                    at,
+                    envelope.projectExecutionBudgetId,
+                  ),
+                productionScriptRetryClaimAudit(
+                  this.db,
+                  this.actor,
+                  {
+                    requestId: this.config.requestId ?? runId,
+                    environment: this.config.environment ?? 'runtime',
+                    accessIssuer: this.config.accessIssuer,
+                    accessSubject: this.config.accessSubject,
+                  },
+                  command.productionScriptRetryAuthorizationId!,
+                  runId,
+                  retryReservationId!,
+                  at,
+                ),
+                legacyRemediationClaimStatement(
+                  this.db,
+                  command.productionScriptRetryAuthorizationId!,
+                  runId,
+                  retryReservationId!,
+                  at,
+                ),
+              ]
+            : [
+                reservationStatement(this.db, {
+                  envelopeId: String(envelope.id),
+                  workspaceId: this.actor.workspaceId,
+                  projectId,
+                  runId,
+                  step: task,
+                  pricingSnapshotId: String(selectedRow.pricingSnapshotId),
+                  reservedMicrousd,
+                  at,
+                  projectExecutionBudgetId: governedStage
+                    ? String(envelope.projectExecutionBudgetId)
+                    : null,
+                }),
+              ]),
+          ...(briefCapacity || scriptRetryAuthorization
             ? [
                 this.db
                   .prepare(
@@ -817,9 +965,18 @@ export class EditorialExecutionService {
                   .bind(at, envelope.id, envelope.id),
               ]
             : []),
+          ...(scriptRetryAuthorization
+            ? [
+                this.db
+                  .prepare(
+                    `SELECT CASE WHEN EXISTS(SELECT 1 FROM editorial_legacy_remediation_claims cl JOIN editorial_production_script_retry_capacities c ON c.id=cl.capacity_id JOIN editorial_execution_envelopes e ON e.id=c.envelope_id WHERE cl.capacity_id=? AND cl.run_id=? AND cl.reservation_id=? AND e.status='CONSUMED') THEN 1 ELSE json('legacy_claim_incomplete') END`,
+                  )
+                  .bind(command.productionScriptRetryAuthorizationId!, runId, retryReservationId!),
+              ]
+            : []),
         ]);
         // Brief consumption is already part of the claim batch. No follow-up write is needed.
-        if (!briefCapacity)
+        if (!briefCapacity && !scriptRetryAuthorization)
           await this.db
             .prepare(
               `UPDATE editorial_execution_envelopes SET status='CONSUMED',updated_at=?,version=version+1 WHERE id=? AND status='ACTIVE' AND (SELECT COUNT(*) FROM editorial_execution_reservations WHERE envelope_id=?) >= maximum_calls`,
@@ -922,35 +1079,52 @@ export class EditorialExecutionService {
             ),
         ]);
       },
-      revisionCapacity
+      scriptRetryAuthorization
         ? async () => {
-            if (briefCapacity) {
-              briefDispatchEntered = true;
-              await authorizeContentBriefRevisionDispatch(
+            await authorizeProductionScriptRetryDispatch(
+              this.db,
+              this.actor,
+              {
+                requestId: this.config.requestId ?? runId,
+                environment: this.config.environment ?? 'runtime',
+                accessIssuer: this.config.accessIssuer,
+                accessSubject: this.config.accessSubject,
+              },
+              command.productionScriptRetryAuthorizationId!,
+              runId,
+              1,
+              retryExecutionPolicyJson!,
+            );
+          }
+        : revisionCapacity
+          ? async () => {
+              if (briefCapacity) {
+                briefDispatchEntered = true;
+                await authorizeContentBriefRevisionDispatch(
+                  this.db,
+                  this.actor,
+                  projectId,
+                  command.contentBriefRevisionCapacityId!,
+                  runId,
+                  this.config.requestId ?? runId,
+                  {
+                    idempotencyKey,
+                    commandHash,
+                    ideaVersionId: command.inputArtifactVersionId,
+                    environment: this.config.environment ?? 'runtime',
+                  },
+                );
+                return;
+              }
+              await authorizeIdeaRevisionDispatch(
                 this.db,
                 this.actor,
                 projectId,
-                command.contentBriefRevisionCapacityId!,
+                command.ideaRevisionCapacityId!,
                 runId,
-                this.config.requestId ?? runId,
-                {
-                  idempotencyKey,
-                  commandHash,
-                  ideaVersionId: command.inputArtifactVersionId,
-                  environment: this.config.environment ?? 'runtime',
-                },
               );
-              return;
             }
-            await authorizeIdeaRevisionDispatch(
-              this.db,
-              this.actor,
-              projectId,
-              command.ideaRevisionCapacityId!,
-              runId,
-            );
-          }
-        : undefined,
+          : undefined,
     );
     const started = Date.now();
     progress.dispatchPipelineEntered = true;
@@ -1023,6 +1197,7 @@ export class EditorialExecutionService {
           costs,
           metadata,
           governed: boundedStep || governedStage,
+          productionScriptRetryAuthorizationId: command.productionScriptRetryAuthorizationId,
           briefCapacityId: command.contentBriefRevisionCapacityId,
           scriptSourceBrief: scriptSourceBrief ?? null,
           reservedMicrousd,
@@ -1149,6 +1324,7 @@ export class EditorialExecutionService {
           'intelligence.run_failed',
           'failure',
           terminalAt,
+          failureMetadata,
         ),
         this.db
           .prepare(
@@ -1715,10 +1891,11 @@ export class EditorialExecutionService {
     action: 'intelligence.run_completed' | 'intelligence.run_failed',
     outcome: 'success' | 'failure',
     at: string,
+    metadata: Row = {},
   ) {
     return this.db
       .prepare(
-        `INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,?,'intelligence_run',?,?,?,?, '{}',?,?)`,
+        `INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES(?,?,'user',?,?,?,?,?,'intelligence_run',?,?,?,?, ?,?,?)`,
       )
       .bind(
         auditId,
@@ -1732,6 +1909,7 @@ export class EditorialExecutionService {
         outcome,
         this.config.requestId ?? runId,
         this.config.environment ?? 'runtime',
+        JSON.stringify(metadata),
         at,
         at,
       );
@@ -1775,6 +1953,7 @@ export class EditorialExecutionService {
       costs: { actualCost: number | null; actualMicrousd: number | null; currency: string | null };
       metadata: Row;
       governed: boolean;
+      productionScriptRetryAuthorizationId?: string | undefined;
       briefCapacityId?: string | undefined;
       scriptSourceBrief: ScriptSourceBriefSnapshot | null;
       reservedMicrousd: number | null;
@@ -2370,7 +2549,14 @@ export class EditorialExecutionService {
       );
     }
     statements.push(
-      this.terminalAuditStatement(auditId, runId, 'intelligence.run_completed', 'success', at),
+      this.terminalAuditStatement(
+        auditId,
+        runId,
+        'intelligence.run_completed',
+        'success',
+        at,
+        completion.metadata,
+      ),
       this.db
         .prepare(
           `UPDATE intelligence_runs SET output_artifact_version_id=?,status='SUCCEEDED',input_units=?,output_units=?,actual_cost=?,currency=?,safe_metadata_json=?,terminal_audit_event_id=?,completed_at=?,updated_at=?,version=version+1 WHERE id=? AND workspace_id=?`,

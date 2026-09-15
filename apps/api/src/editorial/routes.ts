@@ -12,6 +12,10 @@ import {
   contentBriefRevisionRecoverySchema,
 } from '@vision-maxson/contracts';
 import { IdeaRevisionCapacityService, IdeaCapacityError } from './idea-revision-capacity';
+import {
+  ProductionScriptRetryAuthorizationService,
+  ProductionScriptRetryError,
+} from './production-script-retry-authorization';
 import { ideaRevisionCapacitySchema, ideaRevisionRecoverySchema } from '@vision-maxson/contracts';
 import {
   approvalSchema,
@@ -545,6 +549,92 @@ editorialRoutes.post(
     }
   },
 );
+editorialRoutes.post(
+  '/projects/:projectId/scripts/retry-authorizations',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const body: unknown = await c.req.json().catch(() => ({}));
+    const key = c.req.header('Idempotency-Key')?.trim();
+    if (
+      !key ||
+      key.length > 200 ||
+      typeof body !== 'object' ||
+      body === null ||
+      Object.keys(body).length !== 0
+    )
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid empty retry authorization command and Idempotency-Key are required.',
+      );
+    try {
+      const identity = c.get('identity');
+      return await new ProductionScriptRetryAuthorizationService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).authorize(c.req.param('projectId'), key);
+    } catch (error) {
+      const detail =
+        error instanceof ProductionScriptRetryError
+          ? error.message
+          : 'production_script_retry_authorization_failed';
+      const status = error instanceof ProductionScriptRetryError ? error.status : 500;
+      return problem(
+        c,
+        status,
+        status === 404 ? 'Not Found' : status === 409 ? 'Conflict' : 'Validation Failed',
+        detail,
+      );
+    }
+  },
+);
+editorialRoutes.post(
+  '/projects/:projectId/scripts/legacy-remediation-attestations',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const body: unknown = await c.req.json().catch(() => null);
+    const key = c.req.header('Idempotency-Key')?.trim();
+    if (
+      !key ||
+      key.length > 200 ||
+      typeof body !== 'object' ||
+      body === null ||
+      Array.isArray(body) ||
+      Object.keys(body).length !== 0
+    )
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid empty retry authorization command and Idempotency-Key are required.',
+      );
+    try {
+      const identity = c.get('identity');
+      const result = await new ProductionScriptRetryAuthorizationService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).attestLegacy(c.req.param('projectId'), key);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      const detail =
+        error instanceof ProductionScriptRetryError
+          ? error.message
+          : 'production_script_retry_authorization_failed';
+      const status = error instanceof ProductionScriptRetryError ? error.status : 500;
+      return problem(
+        c,
+        status,
+        status === 404 ? 'Not Found' : status === 409 ? 'Conflict' : 'Validation Failed',
+        detail,
+      );
+    }
+  },
+);
 type IntelligenceTask = z.infer<typeof intelligenceTaskSchema>;
 const taskRoutes: ReadonlyArray<readonly [string, IntelligenceTask]> = [
   ['/projects/:projectId/research/generate', 'TOPIC_RESEARCH'],
@@ -589,6 +679,12 @@ for (const [route, task] of taskRoutes)
           ...(parsed.data.ideaRevisionCapacityId
             ? { ideaRevisionCapacityId: parsed.data.ideaRevisionCapacityId }
             : {}),
+          ...(parsed.data.productionScriptRetryAuthorizationId
+            ? {
+                productionScriptRetryAuthorizationId:
+                  parsed.data.productionScriptRetryAuthorizationId,
+              }
+            : {}),
           ...(parsed.data.preferredProviderKey
             ? { preferredProviderKey: parsed.data.preferredProviderKey }
             : {}),
@@ -600,7 +696,11 @@ for (const [route, task] of taskRoutes)
       );
       return c.json(result, result.idempotentReplay ? 200 : 201);
     } catch (error) {
-      if (error instanceof IdeaCapacityError || error instanceof ContentBriefCapacityError)
+      if (
+        error instanceof IdeaCapacityError ||
+        error instanceof ContentBriefCapacityError ||
+        error instanceof ProductionScriptRetryError
+      )
         return problem(c, error.status, 'Validation Failed', error.message);
       if (error instanceof ProviderError)
         return problem(

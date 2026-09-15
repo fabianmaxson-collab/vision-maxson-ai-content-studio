@@ -497,6 +497,7 @@ export const intelligenceCommandSchema = z
     remediationId: id.optional(),
     ideaRevisionCapacityId: id.optional(),
     contentBriefRevisionCapacityId: id.optional(),
+    productionScriptRetryAuthorizationId: id.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -523,6 +524,21 @@ export const intelligenceCommandSchema = z
       context.addIssue({
         code: 'custom',
         message: 'Invalid Content Brief revision execution policy',
+      });
+    if (
+      value.productionScriptRetryAuthorizationId &&
+      (value.ideaRevisionCapacityId ||
+        value.contentBriefRevisionCapacityId ||
+        value.remediationId ||
+        value.mode !== 'LOCKED' ||
+        value.preferredProviderKey !== 'openai' ||
+        value.preferredModelKey !== 'gpt-5.6-luna' ||
+        !value.inputArtifactVersionId ||
+        value.creativeRegeneration)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Invalid Production Script retry execution policy',
       });
     if (value.mode === 'LOCKED' && (!value.preferredProviderKey || !value.preferredModelKey))
       context.addIssue({ code: 'custom', message: 'LOCKED requires provider and model' });
@@ -820,3 +836,38 @@ export const contentBriefRevisionRecoveryResultSchema = z
     maximumCalls: z.literal(1),
   })
   .strict();
+
+export const productionScriptRetryAuthorizationResultSchema = z
+  .object({
+    attestationId: id,
+    evidenceBundleHash: z.string().regex(/^[a-f0-9]{64}$/),
+    observedState: z.literal('PROVIDER_COMPLETED_NO_DURABLE_SCRIPT_SUCCESSOR'),
+    evidenceGap: z.literal('PERSISTENCE_STAGE_CAUSE_NOT_DURABLY_RECORDED'),
+    exceptionClass: z.literal('LEGACY_PRODUCTION_SCRIPT_REMEDIATION_V1'),
+    authorizationBasis: z.literal('LEGACY_OWNER_ATTESTED_EXCEPTION'),
+    capacityId: id,
+    projectId: id,
+    revisionRequestId: id,
+    failedRunId: id,
+    failedAttemptId: id,
+    failedReservationId: id,
+    failedEnvelopeId: id,
+    briefArtifactId: id,
+    briefVersionId: id,
+    scriptArtifactId: id,
+    expectedCurrentScriptVersionId: id,
+    budgetId: id,
+    envelopeId: id,
+    auditEventId: id,
+    profileKey: z.literal('phase3_production_script_retry_v1'),
+    profileVersion: z.literal(1),
+    boundedProfileKey: z.literal('phase3_short_de_review_es_v1'),
+    boundedProfileVersion: z.literal(1),
+    stageKey: z.literal('SCRIPT_WRITER_SHORT'),
+    monetaryCeilingMicrousd: z.literal(2970),
+    maximumCalls: z.literal(1),
+  })
+  .strict();
+export type ProductionScriptRetryAuthorizationResult = z.infer<
+  typeof productionScriptRetryAuthorizationResultSchema
+>;
