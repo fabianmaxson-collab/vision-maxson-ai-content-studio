@@ -14,6 +14,7 @@ type Context = {
   accessSubject: string;
 };
 const action = 'editorial.production_script_human_revised';
+const maxSnapshotBindings = 80;
 export class ProductionScriptHumanRevisionError extends Error {
   constructor(
     readonly status: 403 | 404 | 409 | 422 | 500,
@@ -49,28 +50,67 @@ export class ProductionScriptHumanRevisionService {
   // while TEXT is not coerced to a number and NULL remains distinct from non-NULL values.
   // The count check preserves duplicate cardinality and the empty-snapshot branch preserves absence.
   // Identifiers are internal SQL aliases, never client input. Each guard is its own statement.
-  private guard(sql: string, values: unknown[], columns: string[], expected: Row[]) {
+  private guards(sql: string, values: unknown[], columns: string[], expected: Row[]) {
     if (columns.some((column) => !/^[a-z_]+$/u.test(column))) return fail(500, 'invalid_snapshot');
     const selected = columns.join(',');
-    if (expected.length === 0)
-      return this.statement(
-        `SELECT CASE WHEN NOT EXISTS(${sql}) THEN 1 ELSE json('script_human_revision_snapshot_changed') END`,
-        values,
+    if (values.length + 1 > maxSnapshotBindings) return fail(500, 'invalid_snapshot');
+    const statements = [
+      this.statement(
+        `SELECT CASE WHEN (SELECT count(*) FROM (${sql}))=? THEN 1 ELSE json('script_human_revision_snapshot_changed') END`,
+        [...values, expected.length],
+      ),
+    ];
+    if (expected.length === 0) return statements;
+
+    const typedKey = (row: Row) =>
+      JSON.stringify(
+        columns.map((column) => {
+          const value = row[column];
+          if (value === null) return ['null'];
+          if (typeof value === 'number') {
+            if (!Number.isFinite(value)) return fail(500, 'invalid_snapshot');
+            return ['number', Object.is(value, -0) ? 0 : value];
+          }
+          if (typeof value !== 'string') return fail(500, 'invalid_snapshot');
+          return ['string', value];
+        }),
       );
-    const expectedRows = expected.map(() => `(${columns.map(() => '?').join(',')})`).join(',');
-    return this.statement(
-      `WITH actual AS (${sql}), expected(${selected}) AS (VALUES ${expectedRows})
-       SELECT CASE WHEN
-         (SELECT count(*) FROM actual)=(SELECT count(*) FROM expected)
-         AND NOT EXISTS(SELECT ${selected} FROM actual EXCEPT SELECT ${selected} FROM expected)
-         AND NOT EXISTS(SELECT ${selected} FROM expected EXCEPT SELECT ${selected} FROM actual)
-       THEN 1 ELSE json('script_human_revision_snapshot_changed') END`,
-      [...values, ...expected.flatMap((row) => columns.map((column) => row[column]))],
-    );
+    const grouped = new Map<string, { row: Row; count: number }>();
+    for (const row of expected) {
+      const key = typedKey(row),
+        group = grouped.get(key);
+      if (group) group.count++;
+      else grouped.set(key, { row, count: 1 });
+    }
+    const bindingsPerGroup = columns.length + 1;
+    const groupsPerStatement = Math.floor((maxSnapshotBindings - values.length) / bindingsPerGroup);
+    if (groupsPerStatement < 1) return fail(500, 'invalid_snapshot');
+    const groups = [...grouped.values()];
+    for (let index = 0; index < groups.length; index += groupsPerStatement) {
+      const chunk = groups.slice(index, index + groupsPerStatement);
+      const expectedRows = chunk
+        .map(() => `(${[...columns, 'snapshot_count'].map(() => '?').join(',')})`)
+        .join(',');
+      statements.push(
+        this.statement(
+          `WITH actual AS (${sql}), expected(${selected},snapshot_count) AS (VALUES ${expectedRows}),
+           actual_counts AS (SELECT ${selected},count(*) snapshot_count FROM actual GROUP BY ${selected})
+           SELECT CASE WHEN NOT EXISTS(
+             SELECT ${selected},snapshot_count FROM expected
+             EXCEPT SELECT ${selected},snapshot_count FROM actual_counts
+           ) THEN 1 ELSE json('script_human_revision_snapshot_changed') END`,
+          [
+            ...values,
+            ...chunk.flatMap(({ row, count }) => [...columns.map((column) => row[column]), count]),
+          ],
+        ),
+      );
+    }
+    return statements;
   }
   private exact(table: string, row: Row) {
     const columns = Object.keys(row);
-    return this.guard(`SELECT ${columns.join(',')} FROM ${table} WHERE id=?`, [row.id], columns, [
+    return this.guards(`SELECT ${columns.join(',')} FROM ${table} WHERE id=?`, [row.id], columns, [
       row,
     ]);
   }
@@ -280,12 +320,12 @@ export class ProductionScriptHumanRevisionService {
       ingested_at: at,
     };
     const statements: D1PreparedStatement[] = [
-      this.guard(membershipSql, membershipValues, Object.keys(membership[0]!), membership),
-      this.exact('projects', project),
-      this.guard(artifactSql, scope, Object.keys(script), artifacts),
-      this.guard(versionsSql, [script.id], Object.keys(parent), historical),
-      this.exact('editorial_artifact_versions', source),
-      this.guard(
+      ...this.guards(membershipSql, membershipValues, Object.keys(membership[0]!), membership),
+      ...this.exact('projects', project),
+      ...this.guards(artifactSql, scope, Object.keys(script), artifacts),
+      ...this.guards(versionsSql, [script.id], Object.keys(parent), historical),
+      ...this.exact('editorial_artifact_versions', source),
+      ...this.guards(
         approvalSql,
         scope,
         [
@@ -300,7 +340,7 @@ export class ProductionScriptHumanRevisionService {
         ],
         approvals,
       ),
-      this.guard(dependencySql, scope, Object.keys(lineage), dependencies),
+      ...this.guards(dependencySql, scope, Object.keys(lineage), dependencies),
       researchRemediationClaimGuard(this.db, identity),
       this.insert('editorial_artifact_versions', version),
       ...segments.map((segment) => this.insert('script_segments', segment)),
@@ -351,7 +391,7 @@ export class ProductionScriptHumanRevisionService {
             "UPDATE preflight_assessments SET generation_readiness='NOT_READY' WHERE artifact_version_id=? AND workspace_id=?",
             [target.id, this.actor.workspaceId],
           ),
-          this.guard(
+          ...this.guards(
             'SELECT * FROM preflight_assessments WHERE artifact_version_id=? AND workspace_id=? ORDER BY id',
             [target.id, this.actor.workspaceId],
             assessments.length ? Object.keys(assessments[0]!) : ['id'],
@@ -366,21 +406,21 @@ export class ProductionScriptHumanRevisionService {
     // Final exact guards detect skipped writes, partial materialization, or trigger interference.
     statements.push(
       researchRemediationClaimGuard(this.db, identity),
-      this.guard(membershipSql, membershipValues, Object.keys(membership[0]!), membership),
-      this.exact('projects', project),
-      this.exact('editorial_artifact_versions', source),
-      this.exact('editorial_artifact_versions', parent),
-      this.exact('editorial_artifact_versions', version),
-      this.exact('audit_events', audit),
-      this.guard(
+      ...this.guards(membershipSql, membershipValues, Object.keys(membership[0]!), membership),
+      ...this.exact('projects', project),
+      ...this.exact('editorial_artifact_versions', source),
+      ...this.exact('editorial_artifact_versions', parent),
+      ...this.exact('editorial_artifact_versions', version),
+      ...this.exact('audit_events', audit),
+      ...this.guards(
         'SELECT * FROM artifact_dependencies WHERE dependent_artifact_version_id=? ORDER BY id',
         [versionId],
         Object.keys(lineage),
         [lineage],
       ),
-      this.guard(artifactSql, scope, Object.keys(script), expectedArtifacts),
-      this.guard(dependencySql, scope, Object.keys(lineage), expectedDependencies),
-      this.guard(
+      ...this.guards(artifactSql, scope, Object.keys(script), expectedArtifacts),
+      ...this.guards(dependencySql, scope, Object.keys(lineage), expectedDependencies),
+      ...this.guards(
         approvalSql,
         scope,
         [
@@ -395,13 +435,13 @@ export class ProductionScriptHumanRevisionService {
         ],
         approvals,
       ),
-      this.guard(
+      ...this.guards(
         'SELECT * FROM script_segments WHERE script_version_id=? ORDER BY segment_order',
         [versionId],
         Object.keys(segments[0]!),
         segments,
       ),
-      this.guard(
+      ...this.guards(
         'SELECT id FROM editorial_artifact_versions WHERE artifact_id=? ORDER BY id',
         [script.id],
         ['id'],

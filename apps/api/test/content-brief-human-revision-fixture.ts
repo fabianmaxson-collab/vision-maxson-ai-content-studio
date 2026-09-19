@@ -34,6 +34,7 @@ export type Faults = {
   batches: number;
   statements: string[];
   values: SQLInputValue[][];
+  maxBindings: number;
 };
 // Seed only a local historical AI run through the existing executor with a test double.
 // The human-revision operation itself has no adapter or provider interaction.
@@ -130,13 +131,19 @@ export async function humanFixture() {
   f.database.exec(
     `INSERT INTO projects(id,workspace_id,content_brand_id,channel_profile_id,title,status,format,operating_mode,primary_language,created_at,updated_at,version) VALUES('protected-tim','workspace','brand','channel','Protected Tim','DRAFT','SHORT','ASSISTED','de','t','t',1)`,
   );
-  const faults: Faults = { batches: 0, statements: [], values: [] };
+  const faults: Faults = { batches: 0, statements: [], values: [], maxBindings: 0 };
   const d1 = {
     prepare: (sql: string) => f.d1.prepare(sql),
     batch: (statements: D1PreparedStatement[]) => {
       faults.batches++;
       faults.statements = statements.map((s) => (s as unknown as { sql: string }).sql);
       faults.values = statements.map((s) => (s as unknown as { values: SQLInputValue[] }).values);
+      faults.maxBindings = Math.max(
+        faults.maxBindings,
+        ...faults.values.map((values) => values.length),
+      );
+      if (faults.values.some((values) => values.length > 100))
+        throw new Error('D1_MAX_BOUND_PARAMETERS_EXCEEDED');
       faults.beforeBatch?.();
       const altered = statements.map((s, index) =>
         index === faults.failIndex

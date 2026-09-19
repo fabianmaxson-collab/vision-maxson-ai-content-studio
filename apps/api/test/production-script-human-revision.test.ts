@@ -87,6 +87,7 @@ beforeEach(async () => {
     "UPDATE artifact_dependencies SET validity_status=CASE WHEN id='dep-sb' THEN 'REAPPROVAL_REQUIRED' ELSE 'REGENERATION_REQUIRED' END,invalidated_by_version_id='script-v2',invalidated_at='t2',updated_at='t2',version=version+1 WHERE id IN ('dep-st','dep-sc','dep-sb')",
   );
   f.faults.batches = 0;
+  f.faults.maxBindings = 0;
   provider = vi
     .spyOn(OpenAIResponsesAdapter.prototype, 'execute')
     .mockRejectedValue(new Error('No provider'));
@@ -132,6 +133,77 @@ function post(body: unknown = command, authenticated = true) {
     bindings,
   );
 }
+function growProject(targetArtifacts: number, targetDependencies: number) {
+  const createdVersions: string[] = [];
+  let artifactCount = Number(
+    row("SELECT count(*) n FROM editorial_artifacts WHERE project_id='project'").n,
+  );
+  for (let index = artifactCount; index < targetArtifacts; index++) {
+    const artifactId = `scale-artifact-${index}`,
+      versionId = `scale-version-${index}`;
+    f.database
+      .prepare(
+        `INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,status,created_at,updated_at,version,created_by,updated_by,deleted_at) VALUES(?,'workspace','project','SCRIPT_CRITIQUE','active','t','t',1,'owner','owner','t')`,
+      )
+      .run(artifactId);
+    f.database
+      .prepare(
+        `INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_text,source_type,content_hash,created_at,created_by) VALUES(?,'workspace',?,1,'de',?,'HUMAN_EDITED',?,'t','owner')`,
+      )
+      .run(versionId, artifactId, `scale-${index}`, contentHash(`scale-${index}`));
+    createdVersions.push(versionId);
+    artifactCount++;
+  }
+  const projectVersions = f.database
+    .prepare(
+      `SELECT v.id FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE a.project_id='project' ORDER BY v.id`,
+    )
+    .all() as Array<{ id: string }>;
+  let dependencyCount = Number(
+    row(
+      `SELECT count(*) n FROM artifact_dependencies d JOIN editorial_artifact_versions v ON v.id=d.source_artifact_version_id JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE a.project_id='project'`,
+    ).n,
+  );
+  for (let index = dependencyCount; index < targetDependencies; index++) {
+    const source =
+      createdVersions[index % createdVersions.length] ??
+      projectVersions[index % projectVersions.length]!.id;
+    let dependent =
+      createdVersions[(index + 1) % createdVersions.length] ??
+      projectVersions[(index + 1) % projectVersions.length]!.id;
+    if (dependent === source) dependent = projectVersions[(index + 2) % projectVersions.length]!.id;
+    f.database
+      .prepare(
+        `INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version) VALUES(?,'workspace',?,?,?,'CURRENT','t','t',1)`,
+      )
+      .run(`scale-dependency-${index}`, source, dependent, `SCALE_${index}`);
+    dependencyCount++;
+  }
+}
+
+it.each([
+  { artifacts: 18, dependencies: 24, label: 'real STAGING' },
+  { artifacts: 30, dependencies: 40, label: 'growth' },
+  { artifacts: 60, dependencies: 100, label: 'larger growth' },
+])(
+  'creates the human revision within the D1 parameter budget for $label cardinality',
+  async ({ artifacts, dependencies }) => {
+    growProject(artifacts, dependencies);
+    expect(row("SELECT count(*) n FROM editorial_artifacts WHERE project_id='project'").n).toBe(
+      artifacts,
+    );
+    expect(
+      row(
+        `SELECT count(*) n FROM artifact_dependencies d JOIN editorial_artifact_versions v ON v.id=d.source_artifact_version_id JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE a.project_id='project'`,
+      ).n,
+    ).toBe(dependencies);
+    const result = await service().create('project', command);
+    expect(result.versionNumber).toBe(3);
+    expect(f.faults.maxBindings).toBe(80);
+    expect(f.faults.values.every((values) => values.length <= 100)).toBe(true);
+    expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  },
+);
 it('creates exact append-only unapproved human v3 with segments, lineage, audit and historical invalidation rebinding', async () => {
   const before = snapshot(f);
   const response = await post();
@@ -358,14 +430,19 @@ it('invalidates CURRENT downstream as well as historical invalidations', async (
   });
 });
 it.each(
-  Array.from({ length: 9 }, (_, index) => index + 8).flatMap((index) =>
-    (['failIndex', 'skipIndex'] as const).map((mode) => ({ index, mode })),
+  Array.from({ length: 9 }, (_, mutationOrdinal) => mutationOrdinal).flatMap((mutationOrdinal) =>
+    (['failIndex', 'skipIndex'] as const).map((mode) => ({ mutationOrdinal, mode })),
   ),
-)('rollback on $mode at mutation $index', async ({ index, mode }) => {
-  f.faults[mode] = index;
+)('rollback on $mode at mutation $mutationOrdinal', async ({ mutationOrdinal, mode }) => {
+  f.faults.beforeBatch = () => {
+    const mutationIndexes = f.faults.statements
+      .map((sql, index) => ({ sql, index }))
+      .filter(({ sql }) => /^(INSERT|UPDATE)/u.test(sql));
+    f.faults[mode] = mutationIndexes[mutationOrdinal]!.index;
+  };
   const before = snapshot(f);
   await expect(service().create('project', command)).rejects.toThrow('atomic_write_unconfirmed');
-  expect(f.faults.statements[index]).toMatch(/^(INSERT|UPDATE)/u);
+  expect(f.faults.statements[f.faults[mode]!]).toMatch(/^(INSERT|UPDATE)/u);
   expect(snapshot(f)).toEqual(before);
   expect(f.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
 });
@@ -430,16 +507,40 @@ it('fails closed when a NULL duration becomes numeric concurrently', async () =>
   expect(snapshot(f)).toEqual(concurrent!);
 });
 
-it('does not coerce numeric-looking TEXT to a number in snapshot comparison', () => {
-  const internal = service() as unknown as {
-    guard: (
-      sql: string,
-      values: unknown[],
-      columns: string[],
-      expected: Array<Record<string, string | number | null>>,
-    ) => D1PreparedStatement;
-  };
-  expect(() => internal.guard('SELECT 60 value', [], ['value'], [{ value: '60' }]).run()).toThrow();
+type InternalGuardService = {
+  guards: (
+    sql: string,
+    values: unknown[],
+    columns: string[],
+    expected: Array<Record<string, string | number | null>>,
+  ) => D1PreparedStatement[];
+};
+async function runInternalGuards(
+  sql: string,
+  expected: Array<Record<string, string | number | null>>,
+) {
+  const internal = service() as unknown as InternalGuardService;
+  for (const statement of internal.guards(sql, [], ['value'], expected)) await statement.run();
+}
+it('does not coerce numeric-looking TEXT to a number in snapshot comparison', async () => {
+  await expect(runInternalGuards('SELECT 60 value', [{ value: '60' }])).rejects.toThrow();
+});
+it('treats INTEGER and REAL numeric equivalents as equal', async () => {
+  await expect(runInternalGuards('SELECT 60 value', [{ value: 60.0 }])).resolves.toBeUndefined();
+});
+it('distinguishes NULL from numeric values', async () => {
+  await expect(runInternalGuards('SELECT NULL value', [{ value: 0 }])).rejects.toThrow();
+});
+it.each([
+  { name: 'missing', sql: 'SELECT 1 value WHERE 0', expected: [{ value: 1 }] },
+  { name: 'extra', sql: 'SELECT 1 value UNION ALL SELECT 2', expected: [{ value: 1 }] },
+  {
+    name: 'duplicate cardinality',
+    sql: 'SELECT 1 value UNION ALL SELECT 1',
+    expected: [{ value: 1 }],
+  },
+])('rejects $name rows', async ({ sql, expected }) => {
+  await expect(runInternalGuards(sql, expected)).rejects.toThrow();
 });
 
 it('allows at most one of two simultaneous revisions from the same base', async () => {
@@ -511,13 +612,17 @@ it.each([false, true])(
     INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version) VALUES('dep-sp','workspace','script-v2','preflight-v1','VALIDATED_BY','CURRENT','t','t',1);
     INSERT INTO preflight_assessments(id,workspace_id,project_id,artifact_id,artifact_version_id,overall_result,generation_readiness,rule_set_version,assessed_at,assessed_by) VALUES('assessment','workspace','project','preflight','preflight-v1','PASS','READY_FOR_GENERATION','v1','t','owner');`);
     const before = snapshot(f);
-    // dep-sc, dep-sb, dep-sp are ordered by ID: preflight update follows dep-sp.
-    if (skip) f.faults.skipIndex = 16;
+    if (skip)
+      f.faults.beforeBatch = () => {
+        f.faults.skipIndex = f.faults.statements.findIndex((sql) =>
+          sql.includes("UPDATE preflight_assessments SET generation_readiness='NOT_READY'"),
+        );
+      };
     if (skip) {
       await expect(service().create('project', command)).rejects.toThrow(
         'atomic_write_unconfirmed',
       );
-      expect(f.faults.statements[16]).toContain('UPDATE preflight_assessments');
+      expect(f.faults.statements[f.faults.skipIndex!]).toContain('UPDATE preflight_assessments');
       expect(snapshot(f)).toEqual(before);
     } else {
       await service().create('project', command);
