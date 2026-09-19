@@ -473,6 +473,20 @@ export const productionScriptOutputSchema = z
       .max(500),
   })
   .strict();
+export const productionScriptHumanRevisionSchema = productionScriptOutputSchema
+  .extend({ baseVersionId: id })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.title.trim() || value.segments.some((segment) => !segment.text.trim()))
+      context.addIssue({ code: 'custom', message: 'Nonblank content required.' });
+    if (value.segments.some((segment, index) => segment.order !== index + 1))
+      context.addIssue({ code: 'custom', message: 'Segment order must be contiguous from one.' });
+    if (JSON.stringify(value).length > 250000)
+      context.addIssue({ code: 'custom', message: 'Script content exceeds storage limit.' });
+  });
+export type ProductionScriptHumanRevisionCommand = z.infer<
+  typeof productionScriptHumanRevisionSchema
+>;
 export const reviewTranslationOutputSchema = z
   .object({
     sourceScriptVersionId: id,

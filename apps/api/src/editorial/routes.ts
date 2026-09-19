@@ -1,4 +1,9 @@
 import {
+  ProductionScriptHumanRevisionService,
+  ProductionScriptHumanRevisionError,
+} from './production-script-human-revision';
+import { productionScriptHumanRevisionSchema } from '@vision-maxson/contracts';
+import {
   ContentBriefHumanRevisionService,
   ContentBriefHumanRevisionError,
 } from './content-brief-human-revision';
@@ -916,6 +921,42 @@ editorialRoutes.post(
         error instanceof ContentBriefHumanRevisionError
           ? error.message
           : 'Content Brief human revision could not be completed.',
+      );
+    }
+  },
+);
+
+editorialRoutes.post(
+  '/projects/:projectId/scripts/human-revision',
+  requirePermission('editorial:write'),
+  async (c) => {
+    const parsed = productionScriptHumanRevisionSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success || !validRevisionRouteId(c.req.param('projectId')))
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'Invalid Production Script human revision request.',
+      );
+    try {
+      const identity = c.get('identity');
+      const result = await new ProductionScriptHumanRevisionService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).create(c.req.param('projectId'), parsed.data);
+      return c.json(result, 201);
+    } catch (error) {
+      return problem(
+        c,
+        error instanceof ProductionScriptHumanRevisionError ? error.status : 500,
+        'Validation Failed',
+        error instanceof ProductionScriptHumanRevisionError
+          ? error.message
+          : 'Production Script human revision could not be completed.',
       );
     }
   },
