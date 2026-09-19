@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { backup } from 'node:sqlite';
 import { Hono } from 'hono';
 import { editorialRoutes } from '../src/editorial/routes';
 import type { Bindings } from '../src/app';
@@ -163,10 +164,10 @@ const command = (fixture: Fixture, capacityId?: string) => ({
   ...(capacityId ? { productionScriptRetryAuthorizationId: capacityId } : {}),
 });
 
-function expectValidEligibilityAtExpressionDepth100(database: Fixture['database']) {
+async function expectValidEligibilityAtExpressionDepth100(database: Fixture['database']) {
   const path = join(tmpdir(), `phase3-retry-depth-${randomUUID()}.sqlite`);
-  writeFileSync(path, database.serialize());
   try {
+    await backup(database, path);
     const script = String.raw`
 import sqlite3, sys
 connection = sqlite3.connect(sys.argv[1], cached_statements=0)
@@ -623,7 +624,7 @@ describe('governed Production Script retry', () => {
         'project_2135b883-8499-48e9-a4a7-bb04b970d72a',
         'authorization-key',
       );
-      expectValidEligibilityAtExpressionDepth100(fixture.database);
+      await expectValidEligibilityAtExpressionDepth100(fixture.database);
       await expect(
         execution(fixture).execute(
           'project_2135b883-8499-48e9-a4a7-bb04b970d72a',

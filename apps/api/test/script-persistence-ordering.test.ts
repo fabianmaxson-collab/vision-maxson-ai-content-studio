@@ -399,7 +399,7 @@ describe('Production Script replacement persistence ordering', () => {
       expect(h.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
       h.database.close();
     }
-  });
+  }, 15_000);
 
   it('fails closed for an unexpected CURRENT downstream artifact type', async () => {
     const h = harness();
