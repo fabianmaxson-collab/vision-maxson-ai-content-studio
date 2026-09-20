@@ -49,7 +49,12 @@ import { authorizePhase3Envelope } from './budget';
 import { authorizeGovernedTerminalBudget } from './governed-budget';
 import { GovernedRemediationService } from './governed-remediation';
 import { GovernedChainedRemediationService } from './governed-chained-remediation';
-import { EditorialRepository, type EditorialActor } from './repository';
+import {
+  ApprovalConflictError,
+  ApprovalInternalError,
+  EditorialRepository,
+  type EditorialActor,
+} from './repository';
 import { EditorialRevisionService } from './revision';
 import { GovernedResearchRevisionService } from './research-revision';
 import type { z } from 'zod';
@@ -282,17 +287,50 @@ editorialRoutes.post(
         c.get('requestId'),
         c.env.ENVIRONMENT,
       ).readinessForApproval(c.req.param('versionId'), parsed.data.decision);
-      const result = await new EditorialRepository(c.env.DB, c.get('user')).approve(
-        c.req.param('versionId'),
-        parsed.data.decision,
-        parsed.data.comment,
-        readiness,
-      );
-      await audit(c, 'artifact.approval_recorded', 'editorial_artifact_version', result.versionId);
+      const identity = c.get('identity');
+      const result = await new EditorialRepository(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).approve(c.req.param('versionId'), parsed.data.decision, parsed.data.comment, readiness);
       return c.json(result, 201);
     } catch (error) {
+      if (error instanceof ApprovalInternalError) {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'editorial_approval_internal_failure',
+            requestId: c.get('requestId'),
+          }),
+        );
+        return problem(c, 500, 'Internal Server Error', 'The request could not be completed.');
+      }
+      if (error instanceof ApprovalConflictError) return problem(c, 409, 'Conflict', error.code);
       const message = error instanceof Error ? error.message : 'approval_failed';
-      return problem(c, message.includes('stale') ? 409 : 422, 'Validation Failed', message);
+      const known = new Set([
+        'artifact_version_not_found',
+        'stale_version_cannot_be_approved',
+        'open_revision_request_blocks_approval',
+        'approval_not_allowed',
+        'approval_conflict',
+        'preflight_assessment_missing',
+        'preflight_snapshot_too_large',
+      ]);
+      if (!known.has(message)) {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'editorial_approval_unexpected_error',
+            requestId: c.get('requestId'),
+          }),
+        );
+        return problem(c, 500, 'Internal Server Error', 'The request could not be completed.');
+      }
+      if (message === 'artifact_version_not_found') return problem(c, 404, 'Not Found', message);
+      if (message === 'approval_not_allowed') return problem(c, 403, 'Forbidden', message);
+      const conflict = message.includes('stale') || message.includes('conflict');
+      return problem(c, conflict ? 409 : 422, conflict ? 'Conflict' : 'Validation Failed', message);
     }
   },
 );
