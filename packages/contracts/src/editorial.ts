@@ -242,20 +242,52 @@ export const contentBriefHumanRevisionSchema = z
   })
   .strict();
 export type ContentBriefHumanRevisionCommand = z.infer<typeof contentBriefHumanRevisionSchema>;
-const critiqueIssue = z.object({
-  dimension: z.string().max(100),
-  issue: z.string().max(4000),
-  severity: z.enum(['INFO', 'LOW', 'MEDIUM', 'HIGH', 'BLOCKING']),
-  recommendation: z.string().max(4000),
-  confidence: z.number().min(0).max(1).nullable(),
-  evidenceType: z.enum(['HEURISTIC', 'RULE_BASED', 'SOURCE_BACKED']),
-});
-export const scriptCritiqueSchema = z.object({
-  sourceScriptVersionId: id,
-  strengths: z.array(z.string().max(4000)).max(50),
-  issues: z.array(critiqueIssue).max(100),
-  dimensionsEvaluated: z.array(z.string().max(100)).max(50),
-});
+export const scriptCritiqueDimensionSchema = z.enum([
+  'FACTUAL_CONSISTENCY',
+  'BRIEF_ALIGNMENT',
+  'RESEARCH_ALIGNMENT',
+  'CLARITY',
+  'HOOK',
+  'PACING',
+  'REDUNDANCY',
+  'CTA',
+  'TECHNICAL_ACCURACY',
+  'SHORT_FORMAT_SUITABILITY',
+  'LANGUAGE_AND_EDITORIAL_CONSTRAINTS',
+]);
+export const requiredScriptCritiqueDimensions = scriptCritiqueDimensionSchema.options;
+const critiqueIssue = z
+  .object({
+    dimension: scriptCritiqueDimensionSchema,
+    issue: z.string().trim().min(1).max(4000),
+    severity: z.enum(['INFO', 'LOW', 'MEDIUM', 'HIGH', 'BLOCKING']),
+    recommendation: z.string().trim().min(1).max(4000),
+    confidence: z.number().min(0).max(1).nullable(),
+    evidenceType: z.enum(['HEURISTIC', 'RULE_BASED', 'SOURCE_BACKED']),
+    segmentOrders: z.array(z.number().int().positive()).min(1).max(100).nullable(),
+  })
+  .strict();
+export const scriptCritiqueSchema = z
+  .object({
+    sourceScriptVersionId: id,
+    languageCode: languageCodeSchema,
+    strengths: z.array(z.string().trim().min(1).max(4000)).min(1).max(50),
+    issues: z.array(critiqueIssue).max(100),
+    dimensionsEvaluated: z
+      .array(scriptCritiqueDimensionSchema)
+      .length(requiredScriptCritiqueDimensions.length),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const actual = new Set(value.dimensionsEvaluated);
+    for (const dimension of requiredScriptCritiqueDimensions)
+      if (!actual.has(dimension))
+        context.addIssue({
+          code: 'custom',
+          path: ['dimensionsEvaluated'],
+          message: `Missing required Critique dimension: ${dimension}`,
+        });
+  });
 export const storyboardSceneV1Schema = z.object({
   order: z.number().int().positive(),
   targetDurationSeconds: z.number().positive().nullable(),

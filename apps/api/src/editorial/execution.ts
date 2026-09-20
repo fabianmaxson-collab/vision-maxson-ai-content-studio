@@ -25,6 +25,7 @@ import {
   productionScriptOutputSchema,
   researchOutputSchema,
   reviewTranslationOutputSchema,
+  requiredScriptCritiqueDimensions,
   scriptCritiqueSchema,
   storyboardOutputSchema,
   storyboardOutputV1Schema,
@@ -191,6 +192,164 @@ export function translationSourceGuardStatement(
     );
 }
 
+export type CritiqueSourceSegment = TranslationSourceSegment;
+export type CritiqueArtifactSnapshot = {
+  artifactId: string;
+  artifactRevision: number;
+  artifactStatus: 'approved';
+  currentVersionId: string;
+  versionId: string;
+  versionNumber: number;
+  contentHash: string;
+  languageCode: string;
+  sourceType: string;
+  approvalId: string;
+  positiveApprovalCount: 1;
+  contentText: string | null;
+  contentJson: string | null;
+};
+export type CritiqueSourceSnapshot = {
+  workspaceId: string;
+  projectId: string;
+  script: CritiqueArtifactSnapshot & {
+    sourceType: 'HUMAN_EDITED';
+    segments: CritiqueSourceSegment[];
+  };
+  brief: CritiqueArtifactSnapshot;
+  research: CritiqueArtifactSnapshot;
+};
+
+const critiqueArtifactEvidence = (snapshot: CritiqueArtifactSnapshot) => ({
+  artifactId: snapshot.artifactId,
+  artifactRevision: snapshot.artifactRevision,
+  artifactStatus: snapshot.artifactStatus,
+  currentVersionId: snapshot.currentVersionId,
+  versionId: snapshot.versionId,
+  versionNumber: snapshot.versionNumber,
+  contentHash: snapshot.contentHash,
+  languageCode: snapshot.languageCode,
+  sourceType: snapshot.sourceType,
+  approvalId: snapshot.approvalId,
+  positiveApprovalCount: snapshot.positiveApprovalCount,
+});
+
+export function critiqueSourceSnapshotEvidence(snapshot: CritiqueSourceSnapshot) {
+  return {
+    workspaceId: snapshot.workspaceId,
+    projectId: snapshot.projectId,
+    script: {
+      ...critiqueArtifactEvidence(snapshot.script),
+      segments: snapshot.script.segments.map(({ id, order, contentHash }) => ({
+        id,
+        order,
+        contentHash,
+      })),
+    },
+    brief: critiqueArtifactEvidence(snapshot.brief),
+    research: critiqueArtifactEvidence(snapshot.research),
+    translationInputRole: 'HUMAN_SUPERVISION_ONLY',
+  };
+}
+
+const critiqueSnapshotArtifactPredicate = (artifactType: ArtifactType) => `EXISTS(
+  SELECT 1 FROM editorial_artifacts a
+  JOIN editorial_artifact_versions v ON v.id=? AND v.artifact_id=a.id AND v.workspace_id=a.workspace_id
+  JOIN artifact_approvals ap ON ap.id=? AND ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED'
+  WHERE a.id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='${artifactType}'
+    AND a.current_version_id=? AND a.version=? AND a.status=? AND a.deleted_at IS NULL
+    AND v.version_number=? AND v.content_hash=? AND v.language_code=? AND v.source_type=?
+    AND (SELECT COUNT(*) FROM artifact_approvals approvals WHERE approvals.workspace_id=a.workspace_id AND approvals.artifact_version_id=v.id AND approvals.decision='APPROVED')=?
+)`;
+
+const critiqueSnapshotBindings = (
+  snapshot: CritiqueArtifactSnapshot,
+  workspaceId: string,
+  projectId: string,
+) =>
+  [
+    snapshot.versionId,
+    snapshot.approvalId,
+    snapshot.artifactId,
+    workspaceId,
+    projectId,
+    snapshot.currentVersionId,
+    snapshot.artifactRevision,
+    snapshot.artifactStatus,
+    snapshot.versionNumber,
+    snapshot.contentHash,
+    snapshot.languageCode,
+    snapshot.sourceType,
+    snapshot.positiveApprovalCount,
+  ] as const;
+
+export function critiqueSourceGuardStatement(db: D1Database, snapshot: CritiqueSourceSnapshot) {
+  return db
+    .prepare(
+      `SELECT CASE WHEN
+        ${critiqueSnapshotArtifactPredicate('PRODUCTION_SCRIPT')}
+        AND COALESCE((SELECT json_group_array(json_object('id',ordered.id,'order',ordered.segmentOrder,'contentHash',ordered.contentHash,'text',ordered.contentText)) FROM (SELECT s.id,s.segment_order AS segmentOrder,s.content_hash AS contentHash,s.content_text AS contentText FROM script_segments s WHERE s.workspace_id=? AND s.script_version_id=? ORDER BY s.segment_order) ordered),'[]')=?
+        AND ${critiqueSnapshotArtifactPredicate('CONTENT_BRIEF')}
+        AND ${critiqueSnapshotArtifactPredicate('RESEARCH')}
+        AND (SELECT CASE WHEN COUNT(*)=1 AND MIN(d.source_artifact_version_id)=? THEN 1 ELSE 0 END FROM artifact_dependencies d WHERE d.workspace_id=? AND d.dependent_artifact_version_id=? AND d.dependency_type='GENERATED_FROM' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL)=1
+        AND (SELECT CASE WHEN COUNT(*)=1 AND MIN(d.source_artifact_version_id)=? THEN 1 ELSE 0 END FROM artifact_dependencies d WHERE d.workspace_id=? AND d.dependent_artifact_version_id=? AND d.dependency_type='USES_RESEARCH' AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL)=1
+        THEN 1 ELSE json('critique_source_authorization_changed') END`,
+    )
+    .bind(
+      ...critiqueSnapshotBindings(snapshot.script, snapshot.workspaceId, snapshot.projectId),
+      snapshot.workspaceId,
+      snapshot.script.versionId,
+      JSON.stringify(snapshot.script.segments),
+      ...critiqueSnapshotBindings(snapshot.brief, snapshot.workspaceId, snapshot.projectId),
+      ...critiqueSnapshotBindings(snapshot.research, snapshot.workspaceId, snapshot.projectId),
+      snapshot.brief.versionId,
+      snapshot.workspaceId,
+      snapshot.script.versionId,
+      snapshot.research.versionId,
+      snapshot.workspaceId,
+      snapshot.brief.versionId,
+    );
+}
+
+export function scriptCritiqueProviderContext(project: Row) {
+  const snapshot = project.critiqueSource as CritiqueSourceSnapshot | null | undefined;
+  if (!snapshot)
+    throw new ProviderError('PERMANENT', false, 'The exact Critique source snapshot is required.');
+  return {
+    project: {
+      id: project.id,
+      format: project.format,
+      primaryLanguage: project.primaryLanguage,
+      operatingMode: project.operatingMode,
+      editorialConstraints: project.editorialStrategyJson,
+    },
+    sourceScript: {
+      ...critiqueArtifactEvidence(snapshot.script),
+      contentText: snapshot.script.contentText,
+      contentJson: snapshot.script.contentJson,
+      segments: snapshot.script.segments,
+    },
+    approvedBrief: {
+      ...critiqueArtifactEvidence(snapshot.brief),
+      contentText: snapshot.brief.contentText,
+      contentJson: snapshot.brief.contentJson,
+    },
+    approvedResearch: {
+      ...critiqueArtifactEvidence(snapshot.research),
+      contentText: snapshot.research.contentText,
+      contentJson: snapshot.research.contentJson,
+    },
+    requiredDimensions: [...requiredScriptCritiqueDimensions],
+    translationInputRole: 'HUMAN_SUPERVISION_ONLY',
+  };
+}
+
+export const scriptCritiquePolicyInstructions = `Evaluate every required dimension supplied in requiredDimensions exactly once in dimensionsEvaluated.
+Use only sourceScript, approvedBrief, approvedResearch and the explicit project constraints in context_json.
+Do not use prior Critiques, Storyboards, Translations, Ideas, stale artifacts, or external research.
+Return sourceScriptVersionId and languageCode for the exact supplied source Script.
+Provide at least one non-empty strength. Issues may be empty only when no issue exists after evaluating every required dimension.
+For each issue use a required dimension, a severity, evidence type, confidence, a non-empty recommendation, and segmentOrders for segment-specific findings; use null only for genuinely global findings.
+Return only the strict structured output required by the supplied JSON schema.`;
 export const reviewTranslationPolicyInstructions = `Translate every source segment exactly once into natural Spanish.
 Preserve the source segment boundaries and order; do not merge, split, omit, or add segments.
 Do not summarize, add facts, omit facts, invent explanations, or change editorial intent.
@@ -600,11 +759,31 @@ function validateSemantics(
         'Content Brief Research provenance is invalid.',
       );
   }
-  if (
-    task === 'SCRIPT_CRITIC' &&
-    (output as { sourceScriptVersionId: string }).sourceScriptVersionId !== inputVersionId
-  )
-    throw new ProviderError('SCHEMA_VALIDATION', false, 'Script Critique provenance is invalid.');
+  if (task === 'SCRIPT_CRITIC') {
+    const critique = output as z.infer<typeof scriptCritiqueSchema>;
+    const source = project.critiqueSource as CritiqueSourceSnapshot | null | undefined;
+    if (
+      !source ||
+      critique.sourceScriptVersionId !== inputVersionId ||
+      critique.sourceScriptVersionId !== source.script.versionId ||
+      critique.languageCode !== source.script.languageCode
+    )
+      throw new ProviderError('SCHEMA_VALIDATION', false, 'Script Critique provenance is invalid.');
+    const maximumSegmentOrder = source.script.segments.length;
+    if (
+      critique.issues.some(
+        (issue) =>
+          issue.segmentOrders !== null &&
+          (new Set(issue.segmentOrders).size !== issue.segmentOrders.length ||
+            issue.segmentOrders.some((order) => order > maximumSegmentOrder)),
+      )
+    )
+      throw new ProviderError(
+        'SCHEMA_VALIDATION',
+        false,
+        'Script Critique segment references are invalid.',
+      );
+  }
   const ordered =
     task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG'
       ? (output as { segments: { order: number }[] }).segments
@@ -904,6 +1083,19 @@ export class EditorialExecutionService {
       task === 'REVIEW_TRANSLATION_ES'
         ? (project.exactSource as TranslationSourceSnapshot | undefined)
         : undefined;
+    const critiqueSource =
+      task === 'SCRIPT_CRITIC'
+        ? (project.critiqueSource as CritiqueSourceSnapshot | undefined)
+        : undefined;
+    if (
+      task === 'SCRIPT_CRITIC' &&
+      (!critiqueSource || command.inputArtifactVersionId !== critiqueSource.script.versionId)
+    )
+      throw new ProviderError(
+        'PERMANENT',
+        false,
+        'The exact authoritative Critique source snapshot is required.',
+      );
     if (
       (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG') &&
       (!scriptSourceBrief || command.inputArtifactVersionId !== scriptSourceBrief.versionId)
@@ -1042,11 +1234,18 @@ export class EditorialExecutionService {
         : governedStage
           ? { ...policy, ...governedTerminalStagePolicies[task] }
           : policy;
-    const providerInput = boundedStep
-      ? task === 'REVIEW_TRANSLATION_ES'
-        ? reviewTranslationProviderContext(project, boundedProfile)
-        : scriptWriterShortProviderContext(project, boundedProfile, command.inputArtifactVersionId)
-      : project;
+    const providerInput =
+      task === 'SCRIPT_CRITIC'
+        ? scriptCritiqueProviderContext(project)
+        : boundedStep
+          ? task === 'REVIEW_TRANSLATION_ES'
+            ? reviewTranslationProviderContext(project, boundedProfile)
+            : scriptWriterShortProviderContext(
+                project,
+                boundedProfile,
+                command.inputArtifactVersionId,
+              )
+          : project;
     const providerOutputSchema = z.toJSONSchema(selectedOutputSchema);
     // Bounded prompts already render the complete context into instructions. Sending it again as
     // input duplicates provider-bound content and consumes budget without adding information.
@@ -1054,7 +1253,9 @@ export class EditorialExecutionService {
     const effectivePromptTemplate =
       task === 'REVIEW_TRANSLATION_ES'
         ? `${prompt.templateText}\n\n${reviewTranslationPolicyInstructions}`
-        : prompt.templateText;
+        : task === 'SCRIPT_CRITIC'
+          ? `${prompt.templateText}\n\n${scriptCritiquePolicyInstructions}`
+          : prompt.templateText;
     const providerMaterial = providerBoundRequestMaterial(
       effectivePromptTemplate,
       providerInput,
@@ -1148,6 +1349,9 @@ export class EditorialExecutionService {
           ...(translationSource
             ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
             : {}),
+          ...(critiqueSource
+            ? { critiqueSourceSnapshot: critiqueSourceSnapshotEvidence(critiqueSource) }
+            : {}),
           ...(scriptRetryAuthorization
             ? {
                 productionScriptRetryAuthorizationId: command.productionScriptRetryAuthorizationId,
@@ -1177,6 +1381,9 @@ export class EditorialExecutionService {
     const translationSourceAuthorizationGuard = translationSource
       ? translationSourceGuardStatement(this.db, translationSource)
       : undefined;
+    const critiqueSourceAuthorizationGuard = critiqueSource
+      ? critiqueSourceGuardStatement(this.db, critiqueSource)
+      : undefined;
     if (!claimed && (boundedStep || governedStage) && envelope && reservedMicrousd !== null) {
       try {
         // For Research remediation, this batch commit is the durable authorization point.
@@ -1196,6 +1403,7 @@ export class EditorialExecutionService {
             : []),
           ...(scriptSourceAuthorizationGuard ? [scriptSourceAuthorizationGuard] : []),
           ...(translationSourceAuthorizationGuard ? [translationSourceAuthorizationGuard] : []),
+          ...(critiqueSourceAuthorizationGuard ? [critiqueSourceAuthorizationGuard] : []),
           ...(briefCapacity
             ? [
                 await contentBriefClaimGuard(
@@ -1315,6 +1523,7 @@ export class EditorialExecutionService {
       const authorizationGuards = [
         scriptSourceAuthorizationGuard,
         translationSourceAuthorizationGuard,
+        critiqueSourceAuthorizationGuard,
       ].filter((statement): statement is D1PreparedStatement => statement !== undefined);
       if (authorizationGuards.length) await this.db.batch([...authorizationGuards, insertRun]);
       else await insertRun.run();
@@ -1364,6 +1573,9 @@ export class EditorialExecutionService {
           accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
           ...(translationSource
             ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
+            : {}),
+          ...(critiqueSource
+            ? { critiqueSourceSnapshot: critiqueSourceSnapshotEvidence(critiqueSource) }
             : {}),
           cachedInputUnits: result.usage.cachedInputUnits,
           reasoningOutputUnits: result.usage.reasoningOutputUnits,
@@ -1486,6 +1698,9 @@ export class EditorialExecutionService {
         ...(translationSource
           ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
           : {}),
+        ...(critiqueSource
+          ? { critiqueSourceSnapshot: critiqueSourceSnapshotEvidence(critiqueSource) }
+          : {}),
         latencyMs: Date.now() - started,
         cachedInputUnits: result.usage.cachedInputUnits,
         reasoningOutputUnits: result.usage.reasoningOutputUnits,
@@ -1518,6 +1733,7 @@ export class EditorialExecutionService {
           briefCapacityId: command.contentBriefRevisionCapacityId,
           scriptSourceBrief: scriptSourceBrief ?? null,
           translationSource: translationSource ?? null,
+          critiqueSource: critiqueSource ?? null,
           reservedMicrousd,
         },
       );
@@ -1555,6 +1771,9 @@ export class EditorialExecutionService {
         ...(providerCompletion?.metadata ?? { commandHash }),
         ...(translationSource
           ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
+          : {}),
+        ...(critiqueSource
+          ? { critiqueSourceSnapshot: critiqueSourceSnapshotEvidence(critiqueSource) }
           : {}),
         ...(validationDiagnostic ? { validationDiagnostic } : {}),
         ...(dispatchFailure && dispatchFailure.rejection !== 'ELIGIBILITY_REJECTED'
@@ -1819,7 +2038,7 @@ export class EditorialExecutionService {
     // Revision Ideas start from their exact Research input. Downstream approval
     // does not establish freshness after a Research revision, so do not load it.
     const artifacts =
-      researchOnly || task === 'CONTENT_BRIEF'
+      researchOnly || task === 'CONTENT_BRIEF' || task === 'SCRIPT_CRITIC'
         ? { results: [] as Row[] }
         : await this.db
             .prepare(
@@ -1829,6 +2048,7 @@ export class EditorialExecutionService {
             .all<Row>();
     const lineage: LineageEdge[] = [];
     let scriptSourceBrief: ScriptSourceBriefSnapshot | null = null;
+    let critiqueSource: CritiqueSourceSnapshot | null = null;
     let storyboardSourceSegments: Row[] = [];
     const exactCurrentApproved = async (versionId: string | null, artifactType: string) => {
       if (!versionId)
@@ -1994,11 +2214,134 @@ export class EditorialExecutionService {
       });
     }
     if (task === 'SCRIPT_CRITIC') {
-      const script = await exactCurrentApproved(inputVersionId, 'PRODUCTION_SCRIPT');
-      lineage.push({
-        sourceVersionId: String(script.versionId),
-        dependencyType: 'EVALUATES_SOURCE',
-      });
+      if (!inputVersionId || project.format !== 'SHORT')
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Script Critique requires an exact approved current Short production script.',
+        );
+      const loadSource = async (versionId: string, artifactType: ArtifactType) => {
+        const source = await this.db
+          .prepare(
+            `SELECT a.workspace_id workspaceId,a.project_id projectId,a.id artifactId,a.version artifactRevision,a.status artifactStatus,a.current_version_id currentVersionId,v.id versionId,v.version_number versionNumber,v.content_hash contentHash,v.language_code languageCode,v.source_type sourceType,v.content_text contentText,v.content_json contentJson,
+             (SELECT COUNT(*) FROM artifact_approvals ap WHERE ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED') positiveApprovalCount,
+             (SELECT MIN(ap.id) FROM artifact_approvals ap WHERE ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED') approvalId
+             FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id
+             WHERE v.id=? AND v.workspace_id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type=? AND a.status='approved' AND a.deleted_at IS NULL`,
+          )
+          .bind(versionId, this.actor.workspaceId, this.actor.workspaceId, projectId, artifactType)
+          .first<Row>();
+        if (
+          !source ||
+          source.workspaceId !== this.actor.workspaceId ||
+          source.projectId !== projectId ||
+          source.artifactStatus !== 'approved' ||
+          source.currentVersionId !== versionId ||
+          Number(source.positiveApprovalCount) !== 1 ||
+          typeof source.approvalId !== 'string' ||
+          typeof source.contentHash !== 'string' ||
+          typeof source.languageCode !== 'string' ||
+          typeof source.sourceType !== 'string'
+        )
+          throw new ProviderError(
+            'PERMANENT',
+            false,
+            `The exact authoritative current approved ${artifactType} Critique input is required.`,
+          );
+        return {
+          artifactId: String(source.artifactId),
+          artifactRevision: Number(source.artifactRevision),
+          artifactStatus: 'approved' as const,
+          currentVersionId: String(source.currentVersionId),
+          versionId: String(source.versionId),
+          versionNumber: Number(source.versionNumber),
+          contentHash: String(source.contentHash),
+          languageCode: String(source.languageCode),
+          sourceType: String(source.sourceType),
+          approvalId: String(source.approvalId),
+          positiveApprovalCount: 1 as const,
+          contentText: typeof source.contentText === 'string' ? source.contentText : null,
+          contentJson: typeof source.contentJson === 'string' ? source.contentJson : null,
+        } satisfies CritiqueArtifactSnapshot;
+      };
+      const scriptBase = await loadSource(inputVersionId, 'PRODUCTION_SCRIPT');
+      if (
+        scriptBase.sourceType !== 'HUMAN_EDITED' ||
+        scriptBase.languageCode !== project.primaryLanguage
+      )
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Script Critique requires the exact current approved human-edited production-language Script.',
+        );
+      const scriptSegments = (
+        await this.db
+          .prepare(
+            `SELECT id,segment_order AS "order",content_hash AS contentHash,content_text AS text FROM script_segments WHERE workspace_id=? AND script_version_id=? ORDER BY segment_order`,
+          )
+          .bind(this.actor.workspaceId, inputVersionId)
+          .all<CritiqueSourceSegment>()
+      ).results;
+      if (
+        scriptSegments.length === 0 ||
+        scriptSegments.some(
+          (segment, index) =>
+            segment.order !== index + 1 ||
+            typeof segment.id !== 'string' ||
+            typeof segment.contentHash !== 'string' ||
+            typeof segment.text !== 'string' ||
+            !segment.text.trim(),
+        )
+      )
+        throw new ProviderError('PERMANENT', false, 'Critique source Script segments are invalid.');
+      const briefLinks = (
+        await this.db
+          .prepare(
+            `SELECT d.source_artifact_version_id versionId FROM artifact_dependencies d
+             JOIN editorial_artifact_versions v ON v.id=d.source_artifact_version_id
+             JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id
+             WHERE d.workspace_id=? AND d.dependent_artifact_version_id=? AND d.dependency_type='GENERATED_FROM'
+               AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL
+               AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='CONTENT_BRIEF' AND a.status='approved' AND a.deleted_at IS NULL`,
+          )
+          .bind(this.actor.workspaceId, inputVersionId, this.actor.workspaceId, projectId)
+          .all<{ versionId: string }>()
+      ).results;
+      if (briefLinks.length !== 1)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Critique requires one exact authoritative Brief.',
+        );
+      const brief = await loadSource(briefLinks[0]!.versionId, 'CONTENT_BRIEF');
+      const researchLinks = (
+        await this.db
+          .prepare(
+            `SELECT d.source_artifact_version_id versionId FROM artifact_dependencies d
+             JOIN editorial_artifact_versions v ON v.id=d.source_artifact_version_id
+             JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id
+             WHERE d.workspace_id=? AND d.dependent_artifact_version_id=? AND d.dependency_type='USES_RESEARCH'
+               AND d.validity_status='CURRENT' AND d.invalidated_at IS NULL AND d.invalidated_by_version_id IS NULL
+               AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='RESEARCH' AND a.status='approved' AND a.deleted_at IS NULL`,
+          )
+          .bind(this.actor.workspaceId, brief.versionId, this.actor.workspaceId, projectId)
+          .all<{ versionId: string }>()
+      ).results;
+      if (researchLinks.length !== 1)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Critique requires one exact authoritative Research.',
+        );
+      const research = await loadSource(researchLinks[0]!.versionId, 'RESEARCH');
+      critiqueSource = {
+        workspaceId: this.actor.workspaceId,
+        projectId,
+        script: { ...scriptBase, sourceType: 'HUMAN_EDITED', segments: scriptSegments },
+        brief,
+        research,
+      };
+      lineage.push({ sourceVersionId: inputVersionId, dependencyType: 'EVALUATES_SOURCE' });
     }
     if (task === 'STORYBOARD_PLANNER') {
       const script = await exactCurrentApproved(inputVersionId, 'PRODUCTION_SCRIPT');
@@ -2113,6 +2456,7 @@ export class EditorialExecutionService {
       storyboardSourceSegments,
       lineage,
       scriptSourceBrief,
+      critiqueSource,
       approvedArtifacts: artifacts.results.map((item) => ({
         ...item,
         contentText: typeof item.contentText === 'string' ? item.contentText : null,
@@ -2322,11 +2666,21 @@ export class EditorialExecutionService {
       briefCapacityId?: string | undefined;
       scriptSourceBrief: ScriptSourceBriefSnapshot | null;
       translationSource: TranslationSourceSnapshot | null;
+      critiqueSource: CritiqueSourceSnapshot | null;
       reservedMicrousd: number | null;
     },
   ) {
     const at = now();
     const statements: D1PreparedStatement[] = [];
+    if (task === 'SCRIPT_CRITIC') {
+      if (!completion.critiqueSource)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The exact Critique source snapshot is required for persistence.',
+        );
+      statements.push(critiqueSourceGuardStatement(this.db, completion.critiqueSource));
+    }
     if (task === 'REVIEW_TRANSLATION_ES') {
       if (!completion.translationSource)
         throw new ProviderError(
