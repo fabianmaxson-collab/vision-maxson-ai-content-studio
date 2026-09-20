@@ -114,6 +114,90 @@ type ScriptSourceBriefSnapshot = {
   contentHash: string;
   approvalId: string;
 };
+export type TranslationSourceSegment = {
+  id: string;
+  order: number;
+  contentHash: string;
+  text: string;
+};
+export type TranslationSourceSnapshot = {
+  workspaceId: string;
+  projectId: string;
+  artifactId: string;
+  artifactRevision: number;
+  artifactStatus: 'approved';
+  currentVersionId: string;
+  versionId: string;
+  versionNumber: number;
+  contentHash: string;
+  languageCode: string;
+  sourceType: 'HUMAN_EDITED';
+  approvalId: string;
+  positiveApprovalCount: 1;
+  segments: TranslationSourceSegment[];
+};
+
+export function translationSourceSnapshotEvidence(snapshot: TranslationSourceSnapshot) {
+  return {
+    workspaceId: snapshot.workspaceId,
+    projectId: snapshot.projectId,
+    artifactId: snapshot.artifactId,
+    artifactRevision: snapshot.artifactRevision,
+    artifactStatus: snapshot.artifactStatus,
+    currentVersionId: snapshot.currentVersionId,
+    versionId: snapshot.versionId,
+    versionNumber: snapshot.versionNumber,
+    contentHash: snapshot.contentHash,
+    languageCode: snapshot.languageCode,
+    sourceType: snapshot.sourceType,
+    approvalId: snapshot.approvalId,
+    positiveApprovalCount: snapshot.positiveApprovalCount,
+    segments: snapshot.segments.map(({ id, order, contentHash }) => ({ id, order, contentHash })),
+  };
+}
+
+export function translationSourceGuardStatement(
+  db: D1Database,
+  snapshot: TranslationSourceSnapshot,
+) {
+  return db
+    .prepare(
+      `SELECT CASE WHEN EXISTS(
+        SELECT 1 FROM editorial_artifacts a
+        JOIN editorial_artifact_versions v ON v.id=? AND v.artifact_id=a.id AND v.workspace_id=a.workspace_id
+        JOIN artifact_approvals ap ON ap.id=? AND ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED'
+        WHERE a.id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='PRODUCTION_SCRIPT'
+          AND a.current_version_id=? AND a.version=? AND a.status=? AND a.deleted_at IS NULL
+          AND v.version_number=? AND v.content_hash=? AND v.language_code=? AND v.source_type=?
+          AND (SELECT COUNT(*) FROM artifact_approvals approvals WHERE approvals.workspace_id=a.workspace_id AND approvals.artifact_version_id=v.id AND approvals.decision='APPROVED')=?
+          AND COALESCE((SELECT json_group_array(json_object('id',ordered.id,'order',ordered.segmentOrder,'contentHash',ordered.contentHash,'text',ordered.contentText)) FROM (SELECT s.id,s.segment_order AS segmentOrder,s.content_hash AS contentHash,s.content_text AS contentText FROM script_segments s WHERE s.workspace_id=a.workspace_id AND s.script_version_id=v.id ORDER BY s.segment_order) ordered),'[]')=?
+      ) THEN 1 ELSE json('translation_source_authorization_changed') END`,
+    )
+    .bind(
+      snapshot.versionId,
+      snapshot.approvalId,
+      snapshot.artifactId,
+      snapshot.workspaceId,
+      snapshot.projectId,
+      snapshot.currentVersionId,
+      snapshot.artifactRevision,
+      snapshot.artifactStatus,
+      snapshot.versionNumber,
+      snapshot.contentHash,
+      snapshot.languageCode,
+      snapshot.sourceType,
+      snapshot.positiveApprovalCount,
+      JSON.stringify(snapshot.segments),
+    );
+}
+
+export const reviewTranslationPolicyInstructions = `Translate every source segment exactly once into natural Spanish.
+Preserve the source segment boundaries and order; do not merge, split, omit, or add segments.
+Do not summarize, add facts, omit facts, invent explanations, or change editorial intent.
+Preserve names, dates, acronyms, Ariane terminology, technical meaning, and editorial tone.
+Output Spanish only inside each translated segment text.
+Do not modify or replace the German source.
+Return only the structured output required by the supplied JSON schema.`;
 const promptKey: Record<Task, string> = {
   TOPIC_RESEARCH: 'topic_research',
   IDEA_GENERATION: 'idea_generation',
@@ -249,25 +333,231 @@ export function providerBoundRequestMaterial<
 }
 
 export function reviewTranslationProviderContext(project: Row, profile: BoundedExecutionProfile) {
-  const source = project.exactSource as Row | null;
+  const source = project.exactSource as TranslationSourceSnapshot | null;
   if (
     !source ||
     typeof source.versionId !== 'string' ||
-    typeof source.contentText !== 'string' ||
-    source.languageCode !== profile.productionLanguage
+    source.languageCode !== profile.productionLanguage ||
+    source.sourceType !== 'HUMAN_EDITED' ||
+    !Array.isArray(source.segments) ||
+    source.segments.length === 0 ||
+    source.segments.some(
+      (segment, index) =>
+        segment.order !== index + 1 || typeof segment.text !== 'string' || !segment.text.trim(),
+    )
   )
     throw new ProviderError(
       'PERMANENT',
       false,
-      'The exact production-language source text is required for review translation.',
+      'The exact ordered production-language source segments are required for review translation.',
     );
   return {
     task: 'REVIEW_TRANSLATION_ES' as const,
     sourceScriptVersionId: source.versionId,
     sourceLanguage: profile.productionLanguage,
     targetLanguage: profile.reviewLanguage,
-    sourceScript: source.contentText,
+    sourceSegments: source.segments.map((segment) => ({
+      order: segment.order,
+      text: segment.text,
+    })),
   };
+}
+
+const normalizeTranslationTerm = (value: string) =>
+  value
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLocaleLowerCase('de')
+    .replace(/[‐‑‒–—]/gu, '-')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+
+const translationTokens = (value: string) =>
+  normalizeTranslationTerm(value).split(' ').filter(Boolean);
+const germanFunctionWords = new Set([
+  'aber',
+  'als',
+  'am',
+  'auf',
+  'aus',
+  'bei',
+  'das',
+  'dem',
+  'den',
+  'der',
+  'des',
+  'die',
+  'durch',
+  'eine',
+  'einem',
+  'einen',
+  'einer',
+  'eines',
+  'für',
+  'im',
+  'in',
+  'mit',
+  'nach',
+  'und',
+  'von',
+  'während',
+  'zu',
+  'zum',
+  'zur',
+]);
+const spanishFunctionWords = new Set([
+  'al',
+  'con',
+  'de',
+  'del',
+  'durante',
+  'el',
+  'en',
+  'la',
+  'las',
+  'los',
+  'para',
+  'por',
+  'que',
+  'se',
+  'su',
+  'un',
+  'una',
+  'y',
+]);
+
+function multisetOverlap(source: string[], target: string[]) {
+  const available = new Map<string, number>();
+  for (const token of target) available.set(token, (available.get(token) ?? 0) + 1);
+  let overlap = 0;
+  for (const token of source) {
+    const count = available.get(token) ?? 0;
+    if (count > 0) {
+      overlap += 1;
+      available.set(token, count - 1);
+    }
+  }
+  return source.length === 0 ? 0 : overlap / source.length;
+}
+
+function characterNgramSimilarity(left: string, right: string, size = 3) {
+  const grams = (value: string) => {
+    const compact = normalizeTranslationTerm(value);
+    const result = new Map<string, number>();
+    for (let index = 0; index <= compact.length - size; index += 1) {
+      const gram = compact.slice(index, index + size);
+      result.set(gram, (result.get(gram) ?? 0) + 1);
+    }
+    return result;
+  };
+  const a = grams(left);
+  const b = grams(right);
+  const aCount = [...a.values()].reduce((total, count) => total + count, 0);
+  const bCount = [...b.values()].reduce((total, count) => total + count, 0);
+  if (!aCount || !bCount) return 0;
+  let intersection = 0;
+  for (const [gram, count] of a) intersection += Math.min(count, b.get(gram) ?? 0);
+  return (2 * intersection) / (aCount + bCount);
+}
+
+function translationLooksMostlyLikeSource(source: string, target: string) {
+  const sourceTokens = translationTokens(source);
+  const targetTokens = translationTokens(target);
+  const retained = multisetOverlap(sourceTokens, targetTokens);
+  const germanResidue = targetTokens.filter((token) => germanFunctionWords.has(token)).length;
+  const spanishSignals = targetTokens.filter((token) => spanishFunctionWords.has(token)).length;
+  return (
+    retained >= 0.72 ||
+    characterNgramSimilarity(source, target) >= 0.8 ||
+    (retained >= 0.55 && germanResidue >= 2 && spanishSignals < 2)
+  );
+}
+
+const translationTermRules = [
+  { source: /\bariane\s*5\b/u, target: /\bariane\s*5\b/u, label: 'Ariane 5' },
+  {
+    source: /\b4 juni 1996\b/u,
+    target: /\b4(?: de)? junio(?: de)? 1996\b/u,
+    label: '4 June 1996',
+  },
+  { source: /\bh0\b/u, target: /\bh0\b/u, label: 'H0' },
+  { source: /\bvulcain\b/u, target: /\bvulcain\b/u, label: 'Vulcain' },
+  { source: /\bsri\b/u, target: /\bsri\b/u, label: 'SRI' },
+  { source: /\b64\s*bit\b/u, target: /\b64(?:\s*bit| bits?)\b/u, label: '64-bit' },
+  { source: /\b16\s*bit\b/u, target: /\b16(?:\s*bit| bits?)\b/u, label: '16-bit' },
+  { source: /\bflight 501\b/u, target: /\b(?:flight|vuelo) 501\b/u, label: 'Flight 501' },
+  { source: /\bgerard le lann\b/u, target: /\bgerard le lann\b/u, label: 'Gérard Le Lann' },
+] as const;
+
+export function validateReviewTranslationOutput(
+  output: z.infer<typeof reviewTranslationOutputSchema>,
+  source: TranslationSourceSnapshot,
+) {
+  if (output.sourceScriptVersionId !== source.versionId || output.languageCode !== 'es')
+    throw new ProviderError('SCHEMA_VALIDATION', false, 'Spanish review provenance is invalid.');
+  if (
+    output.segments.length !== source.segments.length ||
+    output.segments.some((segment, index) => segment.order !== source.segments[index]?.order)
+  )
+    throw new ProviderError(
+      'SCHEMA_VALIDATION',
+      false,
+      'Spanish review segments do not match the exact source segment structure.',
+    );
+  const normalizedPairs: Array<{ source: string; target: string }> = [];
+  for (const [index, translated] of output.segments.entries()) {
+    const sourceSegment = source.segments[index]!;
+    const normalizedSource = normalizeTranslationTerm(sourceSegment.text);
+    const normalizedTarget = normalizeTranslationTerm(translated.text);
+    const sourceTokens = translationTokens(sourceSegment.text);
+    const targetTokens = translationTokens(translated.text);
+    if (
+      !normalizedTarget ||
+      normalizedTarget === normalizedSource ||
+      translationLooksMostlyLikeSource(sourceSegment.text, translated.text)
+    )
+      throw new ProviderError(
+        'SCHEMA_VALIDATION',
+        false,
+        'Spanish review segment content is missing or leaves the German source untranslated.',
+      );
+    const minimumTokenRatio = sourceTokens.length >= 8 ? 0.75 : 0.5;
+    if (
+      normalizedTarget.length < Math.max(12, Math.floor(normalizedSource.length * 0.68)) ||
+      targetTokens.length < Math.max(3, Math.ceil(sourceTokens.length * minimumTokenRatio))
+    )
+      throw new ProviderError(
+        'SCHEMA_VALIDATION',
+        false,
+        'Spanish review output is an obvious segment summary.',
+      );
+    for (const rule of translationTermRules)
+      if (rule.source.test(normalizedSource) && !rule.target.test(normalizedTarget))
+        throw new ProviderError(
+          'SCHEMA_VALIDATION',
+          false,
+          `Spanish review output omitted required source term: ${rule.label}.`,
+        );
+    normalizedPairs.push({ source: normalizedSource, target: normalizedTarget });
+  }
+  for (let left = 0; left < normalizedPairs.length; left += 1)
+    for (let right = left + 1; right < normalizedPairs.length; right += 1) {
+      const sourceSimilarity = characterNgramSimilarity(
+        normalizedPairs[left]!.source,
+        normalizedPairs[right]!.source,
+      );
+      const targetSimilarity = characterNgramSimilarity(
+        normalizedPairs[left]!.target,
+        normalizedPairs[right]!.target,
+      );
+      if (sourceSimilarity < 0.65 && targetSimilarity >= 0.84)
+        throw new ProviderError(
+          'SCHEMA_VALIDATION',
+          false,
+          'Spanish review output repeats generic content across distinct source segments.',
+        );
+    }
 }
 
 function validateSemantics(
@@ -285,12 +575,15 @@ function validateSemantics(
       false,
       'Production script language does not match the project.',
     );
-  if (
-    task === 'REVIEW_TRANSLATION_ES' &&
-    ((output as { languageCode: string; sourceScriptVersionId: string }).languageCode !== 'es' ||
-      (output as { sourceScriptVersionId: string }).sourceScriptVersionId !== inputVersionId)
-  )
-    throw new ProviderError('SCHEMA_VALIDATION', false, 'Spanish review provenance is invalid.');
+  if (task === 'REVIEW_TRANSLATION_ES') {
+    const source = project.exactSource as TranslationSourceSnapshot | null;
+    if (!source || source.versionId !== inputVersionId)
+      throw new ProviderError('SCHEMA_VALIDATION', false, 'Spanish review provenance is invalid.');
+    validateReviewTranslationOutput(
+      output as z.infer<typeof reviewTranslationOutputSchema>,
+      source,
+    );
+  }
   if (task === 'CONTENT_BRIEF') {
     const researchIds = (project.lineage as LineageEdge[])
       .filter((edge) => edge.dependencyType === 'USES_RESEARCH')
@@ -607,6 +900,10 @@ export class EditorialExecutionService {
       task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG'
         ? (project.scriptSourceBrief as ScriptSourceBriefSnapshot | undefined)
         : undefined;
+    const translationSource =
+      task === 'REVIEW_TRANSLATION_ES'
+        ? (project.exactSource as TranslationSourceSnapshot | undefined)
+        : undefined;
     if (
       (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG') &&
       (!scriptSourceBrief || command.inputArtifactVersionId !== scriptSourceBrief.versionId)
@@ -754,8 +1051,12 @@ export class EditorialExecutionService {
     // Bounded prompts already render the complete context into instructions. Sending it again as
     // input duplicates provider-bound content and consumes budget without adding information.
     const providerRequestInput = boundedStep || governedStage ? {} : providerInput;
+    const effectivePromptTemplate =
+      task === 'REVIEW_TRANSLATION_ES'
+        ? `${prompt.templateText}\n\n${reviewTranslationPolicyInstructions}`
+        : prompt.templateText;
     const providerMaterial = providerBoundRequestMaterial(
-      prompt.templateText,
+      effectivePromptTemplate,
       providerInput,
       providerRequestInput,
       providerOutputSchema,
@@ -844,6 +1145,9 @@ export class EditorialExecutionService {
         regeneration,
         JSON.stringify({
           commandHash,
+          ...(translationSource
+            ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
+            : {}),
           ...(scriptRetryAuthorization
             ? {
                 productionScriptRetryAuthorizationId: command.productionScriptRetryAuthorizationId,
@@ -870,6 +1174,9 @@ export class EditorialExecutionService {
     const scriptSourceAuthorizationGuard = scriptSourceBrief
       ? this.scriptSourceBriefGuard(scriptSourceBrief)
       : undefined;
+    const translationSourceAuthorizationGuard = translationSource
+      ? translationSourceGuardStatement(this.db, translationSource)
+      : undefined;
     if (!claimed && (boundedStep || governedStage) && envelope && reservedMicrousd !== null) {
       try {
         // For Research remediation, this batch commit is the durable authorization point.
@@ -888,6 +1195,7 @@ export class EditorialExecutionService {
               ]
             : []),
           ...(scriptSourceAuthorizationGuard ? [scriptSourceAuthorizationGuard] : []),
+          ...(translationSourceAuthorizationGuard ? [translationSourceAuthorizationGuard] : []),
           ...(briefCapacity
             ? [
                 await contentBriefClaimGuard(
@@ -1004,8 +1312,11 @@ export class EditorialExecutionService {
           false,
           'Revision-remediation Script execution requires an atomic Run and reservation claim.',
         );
-      if (scriptSourceAuthorizationGuard)
-        await this.db.batch([scriptSourceAuthorizationGuard, insertRun]);
+      const authorizationGuards = [
+        scriptSourceAuthorizationGuard,
+        translationSourceAuthorizationGuard,
+      ].filter((statement): statement is D1PreparedStatement => statement !== undefined);
+      if (authorizationGuards.length) await this.db.batch([...authorizationGuards, insertRun]);
       else await insertRun.run();
     }
     // A successful Brief claim inserted this Run and its reservation in the same transaction.
@@ -1051,6 +1362,9 @@ export class EditorialExecutionService {
           ...result.safeMetadata,
           actualMicrousd: costs.actualMicrousd,
           accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
+          ...(translationSource
+            ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
+            : {}),
           cachedInputUnits: result.usage.cachedInputUnits,
           reasoningOutputUnits: result.usage.reasoningOutputUnits,
         };
@@ -1169,6 +1483,9 @@ export class EditorialExecutionService {
         ...result.safeMetadata,
         actualMicrousd: costs.actualMicrousd,
         accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
+        ...(translationSource
+          ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
+          : {}),
         latencyMs: Date.now() - started,
         cachedInputUnits: result.usage.cachedInputUnits,
         reasoningOutputUnits: result.usage.reasoningOutputUnits,
@@ -1200,6 +1517,7 @@ export class EditorialExecutionService {
           productionScriptRetryAuthorizationId: command.productionScriptRetryAuthorizationId,
           briefCapacityId: command.contentBriefRevisionCapacityId,
           scriptSourceBrief: scriptSourceBrief ?? null,
+          translationSource: translationSource ?? null,
           reservedMicrousd,
         },
       );
@@ -1235,6 +1553,9 @@ export class EditorialExecutionService {
       const terminalStatus = mapped.retryable ? 'FAILED_RETRYABLE' : 'FAILED_PERMANENT';
       const failureMetadata = {
         ...(providerCompletion?.metadata ?? { commandHash }),
+        ...(translationSource
+          ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
+          : {}),
         ...(validationDiagnostic ? { validationDiagnostic } : {}),
         ...(dispatchFailure && dispatchFailure.rejection !== 'ELIGIBILITY_REJECTED'
           ? {
@@ -1724,7 +2045,11 @@ export class EditorialExecutionService {
         );
       exactSource = await this.db
         .prepare(
-          `SELECT v.id AS versionId,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson,a.artifact_type AS artifactType FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id WHERE v.id=? AND v.workspace_id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='PRODUCTION_SCRIPT' AND v.language_code=? AND a.status='approved' AND a.deleted_at IS NULL`,
+          `SELECT v.id AS versionId,v.version_number AS versionNumber,v.language_code AS languageCode,v.content_text AS contentText,v.content_json AS contentJson,v.content_hash AS contentHash,v.source_type AS sourceType,a.id AS artifactId,a.artifact_type AS artifactType,a.workspace_id AS workspaceId,a.project_id AS projectId,a.version AS artifactRevision,a.status AS artifactStatus,a.current_version_id AS currentVersionId,
+          (SELECT COUNT(*) FROM artifact_approvals ap WHERE ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED') AS positiveApprovalCount,
+          (SELECT MIN(ap.id) FROM artifact_approvals ap WHERE ap.workspace_id=a.workspace_id AND ap.artifact_version_id=v.id AND ap.decision='APPROVED') AS approvalId,
+          COALESCE((SELECT json_group_array(json_object('id',ordered.id,'order',ordered.segmentOrder,'contentHash',ordered.contentHash,'text',ordered.contentText)) FROM (SELECT s.id,s.segment_order AS segmentOrder,s.content_hash AS contentHash,s.content_text AS contentText FROM script_segments s WHERE s.workspace_id=a.workspace_id AND s.script_version_id=v.id ORDER BY s.segment_order) ordered),'[]') AS segmentsJson
+          FROM editorial_artifact_versions v JOIN editorial_artifacts a ON a.id=v.artifact_id AND a.current_version_id=v.id WHERE v.id=? AND v.workspace_id=? AND a.workspace_id=? AND a.project_id=? AND a.artifact_type='PRODUCTION_SCRIPT' AND v.language_code=? AND v.source_type='HUMAN_EDITED' AND a.status='approved' AND a.deleted_at IS NULL`,
         )
         .bind(
           inputVersionId,
@@ -1738,8 +2063,48 @@ export class EditorialExecutionService {
         throw new ProviderError(
           'PERMANENT',
           false,
-          'The exact current approved production script is required.',
+          'The exact current approved human-edited production script is required.',
         );
+      let sourceSegments: TranslationSourceSegment[];
+      try {
+        const parsed = JSON.parse(String(exactSource.segmentsJson)) as unknown;
+        if (!Array.isArray(parsed)) throw new Error('segments_not_array');
+        sourceSegments = parsed as TranslationSourceSegment[];
+      } catch {
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The exact source segment snapshot is invalid.',
+        );
+      }
+      if (
+        exactSource.workspaceId !== this.actor.workspaceId ||
+        exactSource.projectId !== projectId ||
+        exactSource.artifactStatus !== 'approved' ||
+        exactSource.currentVersionId !== inputVersionId ||
+        exactSource.sourceType !== 'HUMAN_EDITED' ||
+        Number(exactSource.positiveApprovalCount) !== 1 ||
+        typeof exactSource.approvalId !== 'string' ||
+        sourceSegments.length === 0 ||
+        sourceSegments.some(
+          (segment, index) =>
+            typeof segment.id !== 'string' ||
+            segment.order !== index + 1 ||
+            typeof segment.contentHash !== 'string' ||
+            typeof segment.text !== 'string' ||
+            !segment.text.trim(),
+        )
+      )
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The exact approved Translation source snapshot is ineligible.',
+        );
+      exactSource = {
+        ...exactSource,
+        positiveApprovalCount: 1,
+        segments: sourceSegments,
+      };
     }
     return {
       ...project,
@@ -1956,11 +2321,21 @@ export class EditorialExecutionService {
       productionScriptRetryAuthorizationId?: string | undefined;
       briefCapacityId?: string | undefined;
       scriptSourceBrief: ScriptSourceBriefSnapshot | null;
+      translationSource: TranslationSourceSnapshot | null;
       reservedMicrousd: number | null;
     },
   ) {
     const at = now();
     const statements: D1PreparedStatement[] = [];
+    if (task === 'REVIEW_TRANSLATION_ES') {
+      if (!completion.translationSource)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'The exact Translation source snapshot is required for persistence.',
+        );
+      statements.push(translationSourceGuardStatement(this.db, completion.translationSource));
+    }
     if (completion.briefCapacityId)
       statements.push(
         await contentBriefPublicationGuard(this.db, completion.briefCapacityId, runId),
@@ -2021,7 +2396,9 @@ export class EditorialExecutionService {
         version: number;
         expectedValidity: string;
       }> = [];
-      if (existing?.currentVersionId) {
+      const setBasedInvalidation =
+        Boolean(existing?.currentVersionId) && type !== 'PRODUCTION_SCRIPT';
+      if (existing?.currentVersionId && type === 'PRODUCTION_SCRIPT') {
         const dependents = await this.db
           .prepare(
             `SELECT d.id,d.source_artifact_version_id sourceVersionId,d.dependent_artifact_version_id dependentVersionId,d.dependency_type dependencyType,d.version,d.invalidated_at invalidatedAt,d.invalidated_by_version_id invalidatedByVersionId,a.id dependentArtifactId,a.workspace_id dependentWorkspaceId,a.project_id dependentProjectId,a.current_version_id dependentCurrentVersionId,a.version dependentArtifactRevision,a.deleted_at dependentDeletedAt,a.artifact_type artifactType FROM artifact_dependencies d JOIN editorial_artifact_versions v ON v.id=d.dependent_artifact_version_id JOIN editorial_artifacts a ON a.id=v.artifact_id WHERE d.source_artifact_version_id=? AND d.workspace_id=? AND d.validity_status='CURRENT'`,
@@ -2043,54 +2420,45 @@ export class EditorialExecutionService {
             invalidatedAt: string | null;
             invalidatedByVersionId: string | null;
           }>();
-        if (type === 'PRODUCTION_SCRIPT') {
-          const plan = terminalInvalidationPlan(type);
-          const seenTypes = new Set<ArtifactType>();
-          for (const dependent of dependents.results) {
-            const effect = plan.effects.find(
-              (candidate) => candidate.artifactType === dependent.artifactType,
-            );
-            const expectedDependencyType =
-              dependent.artifactType === 'REVIEW_TRANSLATION'
-                ? terminalStageSourceContracts.REVIEW_TRANSLATION[0].dependencyType
-                : dependent.artifactType === 'SCRIPT_CRITIQUE'
-                  ? terminalStageSourceContracts.SCRIPT_CRITIQUE[0].dependencyType
-                  : dependent.artifactType === 'STORYBOARD'
-                    ? terminalStageSourceContracts.STORYBOARD[0].dependencyType
-                    : dependent.artifactType === 'PREFLIGHT'
-                      ? terminalStageSourceContracts.PREFLIGHT.find(
-                          (contract) => contract.artifactType === 'PRODUCTION_SCRIPT',
-                        )?.dependencyType
-                      : undefined;
-            if (
-              !effect ||
-              !expectedDependencyType ||
-              seenTypes.has(dependent.artifactType) ||
-              dependent.sourceVersionId !== existing.currentVersionId ||
-              dependent.dependentWorkspaceId !== this.actor.workspaceId ||
-              dependent.dependentProjectId !== projectId ||
-              dependent.dependentCurrentVersionId !== dependent.dependentVersionId ||
-              dependent.dependentDeletedAt !== null ||
-              dependent.dependencyType !== expectedDependencyType ||
-              dependent.invalidatedAt !== null ||
-              dependent.invalidatedByVersionId !== null ||
-              invalidationFor(dependent.artifactType) !== effect.validity
-            )
-              throw new ProviderError(
-                'PERMANENT',
-                false,
-                'Current downstream dependency set is incompatible with the terminal invalidation plan.',
-              );
-            seenTypes.add(dependent.artifactType);
-            invalidations.push({ ...dependent, expectedValidity: effect.validity });
-          }
-        } else {
-          invalidations.push(
-            ...dependents.results.map((dependent) => ({
-              ...dependent,
-              expectedValidity: invalidationFor(dependent.artifactType),
-            })),
+        const plan = terminalInvalidationPlan(type);
+        const seenTypes = new Set<ArtifactType>();
+        for (const dependent of dependents.results) {
+          const effect = plan.effects.find(
+            (candidate) => candidate.artifactType === dependent.artifactType,
           );
+          const expectedDependencyType =
+            dependent.artifactType === 'REVIEW_TRANSLATION'
+              ? terminalStageSourceContracts.REVIEW_TRANSLATION[0].dependencyType
+              : dependent.artifactType === 'SCRIPT_CRITIQUE'
+                ? terminalStageSourceContracts.SCRIPT_CRITIQUE[0].dependencyType
+                : dependent.artifactType === 'STORYBOARD'
+                  ? terminalStageSourceContracts.STORYBOARD[0].dependencyType
+                  : dependent.artifactType === 'PREFLIGHT'
+                    ? terminalStageSourceContracts.PREFLIGHT.find(
+                        (contract) => contract.artifactType === 'PRODUCTION_SCRIPT',
+                      )?.dependencyType
+                    : undefined;
+          if (
+            !effect ||
+            !expectedDependencyType ||
+            seenTypes.has(dependent.artifactType) ||
+            dependent.sourceVersionId !== existing.currentVersionId ||
+            dependent.dependentWorkspaceId !== this.actor.workspaceId ||
+            dependent.dependentProjectId !== projectId ||
+            dependent.dependentCurrentVersionId !== dependent.dependentVersionId ||
+            dependent.dependentDeletedAt !== null ||
+            dependent.dependencyType !== expectedDependencyType ||
+            dependent.invalidatedAt !== null ||
+            dependent.invalidatedByVersionId !== null ||
+            invalidationFor(dependent.artifactType) !== effect.validity
+          )
+            throw new ProviderError(
+              'PERMANENT',
+              false,
+              'Current downstream dependency set is incompatible with the terminal invalidation plan.',
+            );
+          seenTypes.add(dependent.artifactType);
+          invalidations.push({ ...dependent, expectedValidity: effect.validity });
         }
       }
       if (
@@ -2146,6 +2514,67 @@ export class EditorialExecutionService {
               edge.dependencyType,
               at,
               at,
+            ),
+        );
+      if (setBasedInvalidation)
+        statements.push(
+          this.db
+            .prepare(
+              `UPDATE artifact_dependencies SET
+                validity_status=CASE COALESCE((
+                  SELECT a.artifact_type FROM editorial_artifact_versions v
+                  JOIN editorial_artifacts a ON a.id=v.artifact_id
+                  WHERE v.id=artifact_dependencies.dependent_artifact_version_id
+                ),'')
+                  WHEN 'REVIEW_TRANSLATION' THEN 'REGENERATION_REQUIRED'
+                  WHEN 'SCRIPT_CRITIQUE' THEN 'REGENERATION_REQUIRED'
+                  WHEN 'STORYBOARD' THEN 'REAPPROVAL_REQUIRED'
+                  WHEN 'PREFLIGHT' THEN 'REAPPROVAL_REQUIRED'
+                  ELSE 'STALE' END,
+                invalidated_at=?,invalidated_by_version_id=?,updated_at=?,version=version+1
+              WHERE workspace_id=? AND source_artifact_version_id=?
+                AND validity_status='CURRENT' AND invalidated_at IS NULL
+                AND invalidated_by_version_id IS NULL`,
+            )
+            .bind(at, versionId, at, this.actor.workspaceId, parentVersionId),
+          this.db
+            .prepare(
+              `UPDATE preflight_assessments SET generation_readiness='NOT_READY'
+               WHERE workspace_id=? AND artifact_version_id IN (
+                 SELECT d.dependent_artifact_version_id FROM artifact_dependencies d
+                 JOIN editorial_artifact_versions v ON v.id=d.dependent_artifact_version_id
+                 JOIN editorial_artifacts a ON a.id=v.artifact_id
+                 WHERE d.workspace_id=? AND d.source_artifact_version_id=?
+                   AND d.invalidated_by_version_id=? AND d.invalidated_at=?
+                   AND a.artifact_type='PREFLIGHT'
+               )`,
+            )
+            .bind(this.actor.workspaceId, this.actor.workspaceId, parentVersionId, versionId, at),
+          this.db
+            .prepare(
+              `UPDATE editorial_artifacts SET id=CASE WHEN
+                NOT EXISTS(SELECT 1 FROM artifact_dependencies d
+                  WHERE d.workspace_id=? AND d.source_artifact_version_id=?
+                    AND d.validity_status='CURRENT')
+                AND NOT EXISTS(
+                  SELECT 1 FROM artifact_dependencies d
+                  JOIN editorial_artifact_versions v ON v.id=d.dependent_artifact_version_id
+                  JOIN editorial_artifacts a ON a.id=v.artifact_id
+                  JOIN preflight_assessments p ON p.artifact_version_id=d.dependent_artifact_version_id
+                  WHERE d.workspace_id=? AND d.source_artifact_version_id=?
+                    AND d.invalidated_by_version_id=? AND d.invalidated_at=?
+                    AND a.artifact_type='PREFLIGHT' AND p.generation_readiness!='NOT_READY'
+                ) THEN id ELSE NULL END WHERE id=? AND workspace_id=?`,
+            )
+            .bind(
+              this.actor.workspaceId,
+              parentVersionId,
+              this.actor.workspaceId,
+              parentVersionId,
+              versionId,
+              at,
+              artifactId,
+              this.actor.workspaceId,
             ),
         );
       for (const dependent of invalidations) {
@@ -2326,7 +2755,9 @@ export class EditorialExecutionService {
               .map((segment) => segment.text)
               .join('\n\n')
           : task === 'REVIEW_TRANSLATION_ES'
-            ? (output as { faithfulTranslation: string }).faithfulTranslation
+            ? (output as z.infer<typeof reviewTranslationOutputSchema>).segments
+                .map((segment) => segment.text)
+                .join('\n\n')
             : null;
       const sourceScriptVersionId =
         task === 'REVIEW_TRANSLATION_ES'

@@ -491,9 +491,28 @@ export const reviewTranslationOutputSchema = z
   .object({
     sourceScriptVersionId: id,
     languageCode: z.literal('es'),
-    faithfulTranslation: z.string().min(1).max(262144),
+    segments: z
+      .array(
+        z
+          .object({
+            order: z.number().int().positive().safe(),
+            text: z.string().trim().min(1).max(32768),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    for (const [index, segment] of value.segments.entries())
+      if (segment.order !== index + 1)
+        context.addIssue({
+          code: 'custom',
+          path: ['segments', index, 'order'],
+          message: 'Translation segment orders must be contiguous and start at 1',
+        });
+  });
 export const storyboardOutputSchema = storyboardOutputV1Schema;
 export const preflightAnalysisOutputSchema = z
   .object({

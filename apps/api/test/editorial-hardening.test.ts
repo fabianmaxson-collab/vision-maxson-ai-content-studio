@@ -110,8 +110,8 @@ describe('editorial routing and budget hardening', () => {
       execution.indexOf('new OpenAIResponsesAdapter'),
     );
   });
-  it('builds a dedicated review-only provider context with the complete exact source', () => {
-    const sourceScript = 'Vollständiger autoritativer deutscher Text.';
+  it('builds a dedicated review-only provider context with exact ordered source segments', () => {
+    const sourceText = 'Vollständiger autoritativer deutscher Text.';
     const context = reviewTranslationProviderContext(
       {
         id: 'project-1',
@@ -120,10 +120,20 @@ describe('editorial routing and budget hardening', () => {
         editorialStrategyJson: 'must-not-be-provider-bound',
         approvedArtifacts: [{ artifactType: 'CONTENT_BRIEF', versionId: 'brief-version-1' }],
         exactSource: {
-          artifactType: 'PRODUCTION_SCRIPT',
+          workspaceId: 'workspace-1',
+          projectId: 'project-1',
+          artifactId: 'script-artifact-1',
+          artifactRevision: 3,
+          artifactStatus: 'approved',
+          currentVersionId: 'script-version-1',
           versionId: 'script-version-1',
+          versionNumber: 3,
+          contentHash: 'a'.repeat(64),
           languageCode: 'de',
-          contentText: sourceScript,
+          sourceType: 'HUMAN_EDITED',
+          approvalId: 'approval-1',
+          positiveApprovalCount: 1,
+          segments: [{ id: 'segment-1', order: 1, contentHash: 'b'.repeat(64), text: sourceText }],
         },
       },
       phase3ShortDeReviewEsProfile,
@@ -134,26 +144,40 @@ describe('editorial routing and budget hardening', () => {
       sourceScriptVersionId: 'script-version-1',
       sourceLanguage: 'de',
       targetLanguage: 'es',
-      sourceScript,
+      sourceSegments: [{ order: 1, text: sourceText }],
     });
     const serialized = JSON.stringify(context);
     expect(serialized.match(/Vollständiger autoritativer deutscher Text\./gu)).toHaveLength(1);
     expect(serialized).not.toContain('CONTENT_BRIEF');
     expect(serialized).not.toContain('must-not-be-provider-bound');
   });
-  it('fails closed when the exact source text or production language is invalid', () => {
+  it('fails closed when exact source segments, type, or production language are invalid', () => {
     expect(() =>
       reviewTranslationProviderContext(
-        { exactSource: { versionId: 'script-version-1', languageCode: 'en', contentText: 'text' } },
+        {
+          exactSource: {
+            versionId: 'script-version-1',
+            languageCode: 'en',
+            sourceType: 'HUMAN_EDITED',
+            segments: [],
+          },
+        },
         phase3ShortDeReviewEsProfile,
       ),
-    ).toThrow('exact production-language source text');
+    ).toThrow('exact ordered production-language source segments');
     expect(() =>
       reviewTranslationProviderContext(
-        { exactSource: { versionId: 'script-version-1', languageCode: 'de', contentText: null } },
+        {
+          exactSource: {
+            versionId: 'script-version-1',
+            languageCode: 'de',
+            sourceType: 'AI_GENERATED',
+            segments: [{ order: 1, text: 'text' }],
+          },
+        },
         phase3ShortDeReviewEsProfile,
       ),
-    ).toThrow('exact production-language source text');
+    ).toThrow('exact ordered production-language source segments');
   });
   it('still fails closed when a genuinely distinct source is oversized', () => {
     const estimate = conservativeInputTokenUpperBound({

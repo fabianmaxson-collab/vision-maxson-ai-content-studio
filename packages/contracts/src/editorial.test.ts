@@ -3,6 +3,7 @@ import {
   createArtifactVersionSchema,
   governedImportedResearchRevisionSchema,
   researchClaimSchema,
+  reviewTranslationOutputSchema,
   scriptCritiqueSchema,
   terminalDependencyTypeSchema,
   terminalGraphSnapshotSchema,
@@ -35,6 +36,69 @@ describe('Phase 3 editorial contracts', () => {
       }).success,
     ).toBe(false);
   });
+  it('enforces a strict ordered structured review translation contract', () => {
+    const segment = (order: number) => ({ order, text: `Traducción completa ${order}` });
+    const valid = {
+      sourceScriptVersionId: 'artifact_version_script_v3',
+      languageCode: 'es',
+      segments: Array.from({ length: 9 }, (_, index) => segment(index + 1)),
+    };
+    expect(reviewTranslationOutputSchema.safeParse(valid).success).toBe(true);
+    expect(
+      reviewTranslationOutputSchema.safeParse({ ...valid, segments: valid.segments.slice(0, 8) })
+        .success,
+    ).toBe(true);
+    expect(
+      reviewTranslationOutputSchema.safeParse({
+        ...valid,
+        segments: [...valid.segments, segment(10)],
+      }).success,
+    ).toBe(true);
+    expect(
+      reviewTranslationOutputSchema.safeParse({
+        ...valid,
+        segments: valid.segments.map((item, index) => (index === 8 ? { ...item, order: 8 } : item)),
+      }).success,
+    ).toBe(false);
+    expect(
+      reviewTranslationOutputSchema.safeParse({
+        ...valid,
+        segments: valid.segments.map((item, index) => (index === 4 ? { ...item, order: 6 } : item)),
+      }).success,
+    ).toBe(false);
+    expect(
+      reviewTranslationOutputSchema.safeParse({ ...valid, segments: [...valid.segments].reverse() })
+        .success,
+    ).toBe(false);
+    expect(
+      reviewTranslationOutputSchema.safeParse({
+        ...valid,
+        segments: valid.segments.map((item, index) =>
+          index === 2 ? { ...item, text: '  ' } : item,
+        ),
+      }).success,
+    ).toBe(false);
+    expect(reviewTranslationOutputSchema.safeParse({ ...valid, languageCode: 'de' }).success).toBe(
+      false,
+    );
+    expect(reviewTranslationOutputSchema.safeParse({ ...valid, extra: true }).success).toBe(false);
+    expect(
+      reviewTranslationOutputSchema.safeParse({
+        ...valid,
+        segments: valid.segments.map((item, index) =>
+          index === 0 ? { ...item, extra: true } : item,
+        ),
+      }).success,
+    ).toBe(false);
+    expect(
+      reviewTranslationOutputSchema.safeParse({
+        sourceScriptVersionId: 'x',
+        languageCode: 'es',
+        faithfulTranslation: 'blob',
+      }).success,
+    ).toBe(false);
+  });
+
   it('requires source script for review translations', () => {
     expect(
       createArtifactVersionSchema.safeParse({
