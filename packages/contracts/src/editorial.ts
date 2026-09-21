@@ -642,6 +642,18 @@ export const governedTerminalBudgetSchema = z
     )
       context.addIssue({ code: 'custom', message: 'Stage ceilings exceed project budget' });
   });
+export const projectExecutionBudgetRolloverSchema = z
+  .object({
+    oldBudgetId: id,
+    expectedOldBudgetVersion: z.literal(1),
+    expectedOldBudgetStatus: z.literal('ACTIVE'),
+    expectedAmbiguousReservationId: id,
+    reason: z.literal('HISTORICAL_AMBIGUITY_QUARANTINE'),
+  })
+  .strict();
+export type ProjectExecutionBudgetRolloverCommand = z.infer<
+  typeof projectExecutionBudgetRolloverSchema
+>;
 export const governedRemediationCapacitySchema = z
   .object({
     workspaceId: id,

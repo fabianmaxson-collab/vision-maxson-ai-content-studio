@@ -26,6 +26,7 @@ import {
   approvalSchema,
   createArtifactVersionSchema,
   governedTerminalBudgetSchema,
+  projectExecutionBudgetRolloverSchema,
   governedChainedRemediationCapacitySchema,
   governedRemediationCapacitySchema,
   governedImportedResearchRevisionSchema,
@@ -47,6 +48,7 @@ import { EditorialExecutionService } from './execution';
 import { DeterministicPreflightService } from './preflight';
 import { authorizePhase3Envelope } from './budget';
 import { authorizeGovernedTerminalBudget } from './governed-budget';
+import { ProjectBudgetRolloverError, ProjectBudgetRolloverService } from './budget-rollover';
 import { GovernedRemediationService } from './governed-remediation';
 import { GovernedChainedRemediationService } from './governed-chained-remediation';
 import {
@@ -515,6 +517,55 @@ editorialRoutes.post(
         'Validation Failed',
         error instanceof Error ? error.message : 'governed_terminal_budget_authorization_failed',
       );
+    }
+  },
+);
+editorialRoutes.post(
+  '/admin/projects/:projectId/editorial-project-execution-budgets/rollover',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const parsed = projectExecutionBudgetRolloverSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    const key = c.req.header('Idempotency-Key')?.trim();
+    if (!parsed.success || !key || key.length > 200)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid budget rollover command and Idempotency-Key are required.',
+      );
+    try {
+      const identity = c.get('identity');
+      const result = await new ProjectBudgetRolloverService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).rollover(c.req.param('projectId'), key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      if (error instanceof ProjectBudgetRolloverError)
+        return problem(
+          c,
+          error.status,
+          error.status === 404
+            ? 'Not Found'
+            : error.status === 409
+              ? 'Conflict'
+              : error.status === 403
+                ? 'Forbidden'
+                : 'Validation Failed',
+          error.message,
+        );
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'project_execution_budget_rollover_failed',
+          requestId: c.get('requestId'),
+        }),
+      );
+      return problem(c, 500, 'Internal Server Error', 'The request could not be completed.');
     }
   },
 );
