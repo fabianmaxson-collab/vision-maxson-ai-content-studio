@@ -606,7 +606,6 @@ export class ProjectBudgetRolloverService {
     });
 
     const guardedSource = guardedSourcePredicate('b', this.policy);
-    const guardedOldSource = guardedSourcePredicate('old', this.policy);
     const updateSql = `UPDATE editorial_project_execution_budgets AS b
       SET status='CONSUMED',version=2,updated_at=?
       WHERE b.id=? AND b.workspace_id=? AND b.project_id=? AND b.status='ACTIVE' AND b.version=1
@@ -630,8 +629,7 @@ export class ProjectBudgetRolloverService {
            AND s.created_at=? AND s.updated_at=?
            AND (SELECT count(*) FROM editorial_project_execution_budgets x WHERE x.workspace_id=s.workspace_id AND x.project_id=s.project_id AND x.profile_key=s.profile_key AND x.profile_version=s.profile_version AND x.status='ACTIVE')=1
            AND NOT EXISTS(SELECT 1 FROM editorial_execution_envelopes e WHERE e.project_execution_budget_id=s.id)
-           AND NOT EXISTS(SELECT 1 FROM editorial_execution_reservations r WHERE r.project_execution_budget_id=s.id)
-            AND ${guardedOldSource}),
+           AND NOT EXISTS(SELECT 1 FROM editorial_execution_reservations r WHERE r.project_execution_budget_id=s.id)),
         'editorial_project_execution_budget',?,'success',?,?,?,?,?)`;
     try {
       await this.db.batch([
@@ -668,7 +666,6 @@ export class ProjectBudgetRolloverService {
             at,
             at,
             at,
-            this.actor.id,
             successorBudgetId,
             this.context.requestId,
             this.context.environment,

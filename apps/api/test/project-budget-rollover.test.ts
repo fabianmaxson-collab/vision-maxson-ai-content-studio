@@ -753,7 +753,7 @@ describe('safe project budget rollover', () => {
       idempotencyKey: 'rollover-key',
     });
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(d1.maxBoundParameters).toBe(21);
+    expect(d1.maxBoundParameters).toBe(20);
     expect(d1.maxBatchStatements).toBe(3);
     expect(d1.queries).toBe(5);
     database.close();
