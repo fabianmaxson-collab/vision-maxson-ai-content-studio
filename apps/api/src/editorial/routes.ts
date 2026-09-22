@@ -27,6 +27,7 @@ import {
   createArtifactVersionSchema,
   governedTerminalBudgetSchema,
   projectExecutionBudgetRolloverSchema,
+  scriptCriticCapacitySchema,
   governedChainedRemediationCapacitySchema,
   governedRemediationCapacitySchema,
   governedImportedResearchRevisionSchema,
@@ -49,6 +50,7 @@ import { DeterministicPreflightService } from './preflight';
 import { authorizePhase3Envelope } from './budget';
 import { authorizeGovernedTerminalBudget } from './governed-budget';
 import { ProjectBudgetRolloverError, ProjectBudgetRolloverService } from './budget-rollover';
+import { ScriptCriticCapacityError, ScriptCriticCapacityService } from './script-critic-capacity';
 import { GovernedRemediationService } from './governed-remediation';
 import { GovernedChainedRemediationService } from './governed-chained-remediation';
 import {
@@ -65,6 +67,7 @@ type Vars = {
   requestId: string;
   identity: { issuer: string; subject: string; email: string };
   user: EditorialActor;
+  createScriptCriticCapacityService?: EditorialRouteDependencies['createScriptCriticCapacityService'];
 };
 type Env = { Bindings: Bindings; Variables: Vars };
 const problem = (
@@ -182,7 +185,27 @@ async function audit(
     )
     .run();
 }
+type ScriptCriticCapacityConstructor = ConstructorParameters<typeof ScriptCriticCapacityService>;
+export type EditorialRouteDependencies = {
+  createScriptCriticCapacityService?: (
+    db: ScriptCriticCapacityConstructor[0],
+    actor: ScriptCriticCapacityConstructor[1],
+    context: ScriptCriticCapacityConstructor[2],
+  ) => ScriptCriticCapacityService;
+};
+
 export const editorialRoutes = new Hono<Env>();
+
+export function createEditorialRoutes(dependencies: EditorialRouteDependencies) {
+  const routes = new Hono<Env>();
+  routes.use('*', async (c, next) => {
+    if (dependencies.createScriptCriticCapacityService)
+      c.set('createScriptCriticCapacityService', dependencies.createScriptCriticCapacityService);
+    await next();
+  });
+  routes.route('/', editorialRoutes);
+  return routes;
+}
 
 editorialRoutes.get('/ai/catalog', requirePermission('intelligence:read'), async (c) =>
   c.json(await new EditorialRepository(c.env.DB, c.get('user')).providerCatalog()),
@@ -562,6 +585,58 @@ editorialRoutes.post(
         JSON.stringify({
           level: 'error',
           event: 'project_execution_budget_rollover_failed',
+          requestId: c.get('requestId'),
+        }),
+      );
+      return problem(c, 500, 'Internal Server Error', 'The request could not be completed.');
+    }
+  },
+);
+editorialRoutes.post(
+  '/admin/projects/:projectId/editorial-script-critic-capacities',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const parsed = scriptCriticCapacitySchema.safeParse(await c.req.json().catch(() => null));
+    const key = c.req.header('Idempotency-Key')?.trim();
+    if (!parsed.success || !key || key.length > 200)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid Script Critic capacity command and Idempotency-Key are required.',
+      );
+    try {
+      const identity = c.get('identity');
+      const auditContext = {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      };
+      const serviceFactory = c.get('createScriptCriticCapacityService');
+      const service = serviceFactory
+        ? serviceFactory(c.env.DB, c.get('user'), auditContext)
+        : new ScriptCriticCapacityService(c.env.DB, c.get('user'), auditContext);
+      const result = await service.provision(c.req.param('projectId'), key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      if (error instanceof ScriptCriticCapacityError)
+        return problem(
+          c,
+          error.status,
+          error.status === 404
+            ? 'Not Found'
+            : error.status === 409
+              ? 'Conflict'
+              : error.status === 403
+                ? 'Forbidden'
+                : 'Validation Failed',
+          error.message,
+        );
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'script_critic_capacity_provision_failed',
           requestId: c.get('requestId'),
         }),
       );

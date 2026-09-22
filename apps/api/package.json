@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "wrangler deploy --config ../../infra/cloudflare/wrangler.jsonc --env local --dry-run --outdir dist",
-    "test": "vitest run",
+    "test": "vitest run --exclude test/project-budget-rollover-d1.test.ts --exclude test/script-critic-capacity-d1.test.ts && vitest run test/project-budget-rollover-d1.test.ts test/script-critic-capacity-d1.test.ts --maxWorkers=1",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

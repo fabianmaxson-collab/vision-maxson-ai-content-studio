@@ -654,6 +654,16 @@ export const projectExecutionBudgetRolloverSchema = z
 export type ProjectExecutionBudgetRolloverCommand = z.infer<
   typeof projectExecutionBudgetRolloverSchema
 >;
+export const scriptCriticCapacitySchema = z
+  .object({
+    successorBudgetId: id,
+    expectedBudgetVersion: z.literal(1),
+    expectedBudgetStatus: z.literal('ACTIVE'),
+    consumedHistoricalEnvelopeId: id,
+    reason: z.literal('REPLACEMENT_SCRIPT_CRITIC_CAPACITY'),
+  })
+  .strict();
+export type ScriptCriticCapacityCommand = z.infer<typeof scriptCriticCapacitySchema>;
 export const governedRemediationCapacitySchema = z
   .object({
     workspaceId: id,

@@ -90,11 +90,16 @@ async function waitForServer(
   origin: string,
   child: ChildProcessWithoutNullStreams,
   logs: () => string,
+  spawnError: () => Error | null,
 ) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null)
-      throw new Error(`Wrangler exited early (${child.exitCode})\n${logs()}`);
+    const error = spawnError();
+    if (error) throw new Error(`Wrangler process crashed: ${error.message}\n${logs()}`);
+    if (child.exitCode !== null || child.signalCode !== null)
+      throw new Error(
+        `Wrangler process crashed (exit=${child.exitCode}, signal=${child.signalCode})\n${logs()}`,
+      );
     try {
       const response = await fetch(`${origin}/health`);
       if (response.ok) return;
@@ -106,14 +111,26 @@ async function waitForServer(
   throw new Error(`Timed out waiting for Wrangler local\n${logs()}`);
 }
 
-async function stopWorker(child: ChildProcessWithoutNullStreams) {
-  if (child.exitCode !== null) return;
-  child.kill('SIGTERM');
-  await Promise.race([
-    new Promise<void>((resolveExit) => child.once('exit', () => resolveExit())),
-    new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 5_000)),
-  ]);
-  if (child.exitCode === null) child.kill('SIGKILL');
+async function waitForClose(closed: Promise<void>, timeoutMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      closed.then(() => true),
+      new Promise<boolean>((resolveTimeout) => {
+        timer = setTimeout(() => resolveTimeout(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function stopWorker(child: ChildProcessWithoutNullStreams, closed: Promise<void>) {
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+  if (await waitForClose(closed, 5_000)) return;
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  if (!(await waitForClose(closed, 5_000)))
+    throw new Error(`Wrangler process ${child.pid} did not close after SIGKILL`);
 }
 
 async function runScenario(scenario: string): Promise<ScenarioResult> {
@@ -140,11 +157,19 @@ async function runScenario(scenario: string): Promise<ScenarioResult> {
     { cwd: root, env: wranglerEnvironment(), stdio: 'pipe' },
   );
   let output = '';
+  let processError: Error | null = null;
+  child.once('error', (error) => (processError = error));
+  const closed = new Promise<void>((resolveClose) => child.once('close', () => resolveClose()));
   child.stdout.on('data', (chunk) => (output += String(chunk)));
   child.stderr.on('data', (chunk) => (output += String(chunk)));
   const origin = `http://127.0.0.1:${port}`;
   try {
-    await waitForServer(origin, child, () => output);
+    await waitForServer(
+      origin,
+      child,
+      () => output,
+      () => processError,
+    );
     const response = await fetch(`${origin}/scenario/${scenario}`, { method: 'POST' });
     const body: ScenarioResult & { fatal?: string } = await response.json();
     if (!response.ok || body.fatal)
@@ -153,7 +178,7 @@ async function runScenario(scenario: string): Promise<ScenarioResult> {
       );
     return body;
   } finally {
-    await stopWorker(child);
+    await stopWorker(child, closed);
   }
 }
 
@@ -230,10 +255,20 @@ beforeAll(() => {
     throw new Error(`D1 local migration replay failed\n${migration.stdout}\n${migration.stderr}`);
 }, 120_000);
 
-afterAll(() => {
+afterAll(async () => {
   const expectedPrefix = join(tmpdir(), 'vision-maxson-rollover-d1-');
   if (!temporaryRoot.startsWith(expectedPrefix)) throw new Error('unsafe D1 test cleanup path');
-  rmSync(temporaryRoot, { recursive: true, force: true });
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+    }
+  }
+  throw lastError;
 });
 
 describe('ProjectBudgetRolloverService on Wrangler D1 local/workerd', () => {

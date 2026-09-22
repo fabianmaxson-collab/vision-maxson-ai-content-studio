@@ -5,7 +5,11 @@ import { verifyAccessJwt, type AccessIdentity } from '@vision-maxson/security';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { secureHeaders } from 'hono/secure-headers';
 import { productRoutes } from './product/routes';
-import { editorialRoutes } from './editorial/routes';
+import {
+  createEditorialRoutes,
+  editorialRoutes,
+  type EditorialRouteDependencies,
+} from './editorial/routes';
 import { createProviderAdminRoutes, type ConnectivityAdapterFactory } from './providers/routes';
 
 export interface Bindings {
@@ -191,6 +195,7 @@ const requirePermission =
 export function createApp(
   verifyIdentity: IdentityVerifier = verifyAccessJwt,
   connectivityAdapterFactory?: ConnectivityAdapterFactory,
+  editorialRouteDependencies?: EditorialRouteDependencies,
 ) {
   const app = new Hono<{ Bindings: Bindings; Variables: Vars }>();
   app.use('*', secureHeaders());
@@ -355,7 +360,12 @@ export function createApp(
     return c.json({ items: result.results });
   });
   app.route('/api/v1', productRoutes);
-  app.route('/api/v1', editorialRoutes);
+  app.route(
+    '/api/v1',
+    editorialRouteDependencies
+      ? createEditorialRoutes(editorialRouteDependencies)
+      : editorialRoutes,
+  );
   app.route('/api/v1', createProviderAdminRoutes(connectivityAdapterFactory));
   app.notFound((c) =>
     c.req.path.startsWith('/api/')
