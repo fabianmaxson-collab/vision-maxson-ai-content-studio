@@ -46,6 +46,7 @@ import {
   type BoundedExecutionProfile,
 } from '@vision-maxson/providers/execution-profile';
 import { EditorialExecutionService } from './execution';
+import { ScriptCritiqueLanguageCapabilityError } from './critique-language';
 import { DeterministicPreflightService } from './preflight';
 import { authorizePhase3Envelope } from './budget';
 import { authorizeGovernedTerminalBudget } from './governed-budget';
@@ -865,6 +866,8 @@ for (const [route, task] of taskRoutes)
       );
       return c.json(result, result.idempotentReplay ? 200 : 201);
     } catch (error) {
+      if (error instanceof ScriptCritiqueLanguageCapabilityError)
+        return problem(c, error.status, 'Validation Failed', error.message);
       if (
         error instanceof IdeaCapacityError ||
         error instanceof ContentBriefCapacityError ||

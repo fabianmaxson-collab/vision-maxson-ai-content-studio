@@ -3,6 +3,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { requiredScriptCritiqueDimensions, scriptCritiqueSchema } from '@vision-maxson/contracts';
 import { OpenAIResponsesAdapter } from '@vision-maxson/providers/openai';
+import { ScriptCritiqueLanguageCapabilityError } from '../src/editorial/critique-language';
 import {
   critiqueSourceSnapshotEvidence,
   EditorialExecutionService,
@@ -858,7 +859,7 @@ describe('SCRIPT_CRITIC public execution and persistence', () => {
   it.each([
     ['empty strengths', { ...output(), strengths: [] }],
     ['wrong source Script', { ...output(), sourceScriptVersionId: 'script-v1' }],
-    ['wrong language', { ...output(), languageCode: 'en' }],
+    ['wrong language', { ...output(), languageCode: 'es' }],
     [
       'out-of-range segment reference',
       { ...output(), issues: [{ ...output().issues[0], segmentOrders: [3] }] },
@@ -892,6 +893,179 @@ describe('SCRIPT_CRITIC public execution and persistence', () => {
             .prepare('SELECT status FROM intelligence_runs WHERE idempotency_key=?')
             .get(key),
         ).toEqual({ status: 'FAILED_PERMANENT' });
+      } finally {
+        provider.mockRestore();
+        h.database.close();
+      }
+    },
+  );
+});
+
+describe('SCRIPT_CRITIC post-provider language rejection', () => {
+  it.each([
+    [
+      'Spanish',
+      {
+        ...output(),
+        strengths: [
+          'El guion abre inmediatamente con el hook aprobado y mantiene un tono claro, sobrio y documental.',
+        ],
+        issues: [],
+      },
+    ],
+    [
+      'mixed',
+      {
+        ...output(),
+        strengths: [
+          'Die Erzählung nennt den Vulcain und zeigt die technische Ursache klar und präzise.',
+          'El guion mantiene una narración clara, pero la secuencia necesita más tiempo para explicar la causa.',
+        ],
+        issues: [],
+      },
+    ],
+  ])(
+    'terminalizes %s prose after one paid attempt without publishing',
+    async (label, invalidOutput) => {
+      const h = seed(0);
+      const provider = vi
+        .spyOn(OpenAIResponsesAdapter.prototype, 'execute')
+        .mockResolvedValue({ ...providerResult(), output: invalidOutput });
+      const key = `critic-language-${label}`;
+      try {
+        await expect(h.service.execute('project', 'SCRIPT_CRITIC', command, key)).rejects.toThrow(
+          /editorial language is invalid/u,
+        );
+        expect(provider).toHaveBeenCalledTimes(1);
+        const run = h.database
+          .prepare(
+            'SELECT id,status,actual_cost actualCost,output_artifact_version_id outputVersionId FROM intelligence_runs WHERE idempotency_key=?',
+          )
+          .get(key) as {
+          id: string;
+          status: string;
+          actualCost: number;
+          outputVersionId: string | null;
+        };
+        const attemptMetadata = h.database
+          .prepare(
+            'SELECT safe_metadata_json metadata FROM intelligence_run_attempts WHERE intelligence_run_id=?',
+          )
+          .get(run.id) as { metadata: string };
+        expect(JSON.parse(attemptMetadata.metadata)).toMatchObject({
+          scriptCritiqueLanguagePolicyVersion: 'script_critic_source_language_v2',
+          scriptCritiqueSourcePrimaryLanguage: 'de',
+        });
+        expect(run).toMatchObject({
+          status: 'FAILED_PERMANENT',
+          actualCost: 0.0024,
+          outputVersionId: null,
+        });
+        expect(
+          h.database
+            .prepare(
+              'SELECT status,provider_request_id providerRequestId FROM intelligence_run_attempts WHERE intelligence_run_id=?',
+            )
+            .get(run.id),
+        ).toEqual({ status: 'FAILED_PERMANENT', providerRequestId: 'provider-request' });
+        expect(
+          h.database
+            .prepare(
+              'SELECT status,actual_microusd actualMicrousd FROM editorial_execution_reservations WHERE intelligence_run_id=?',
+            )
+            .get(run.id),
+        ).toEqual({ status: 'RECONCILED', actualMicrousd: 2400 });
+        expect(
+          h.database
+            .prepare(
+              "SELECT COUNT(*) count FROM editorial_artifact_versions WHERE artifact_id='critique'",
+            )
+            .get(),
+        ).toEqual({ count: 1 });
+        expect(
+          h.database
+            .prepare(
+              "SELECT COUNT(*) count FROM intelligence_runs WHERE task_type='STORYBOARD_PLANNER'",
+            )
+            .get(),
+        ).toEqual({ count: 0 });
+        expect(h.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+        const replay = await h.service.execute('project', 'SCRIPT_CRITIC', command, key);
+        expect(replay.idempotentReplay).toBe(true);
+        expect(provider).toHaveBeenCalledTimes(1);
+      } finally {
+        provider.mockRestore();
+        h.database.close();
+      }
+    },
+  );
+});
+
+describe('SCRIPT_CRITIC unsupported primary languages fail before paid execution', () => {
+  it.each(['fr', 'fr-FR', 'pt-BR'])(
+    '%s rejects first request and replay without state mutation',
+    async (tag) => {
+      const h = seed(0);
+      dropVersionImmutability(h.database);
+      h.database.prepare("UPDATE projects SET primary_language=? WHERE id='project'").run(tag);
+      h.database
+        .prepare("UPDATE editorial_artifact_versions SET language_code=? WHERE id='script-v3'")
+        .run(tag);
+      const provider = vi.spyOn(OpenAIResponsesAdapter.prototype, 'execute');
+      const key = 'unsupported-critic-' + tag;
+      const count = (table: string) =>
+        (h.database.prepare('SELECT COUNT(*) count FROM ' + table).get() as { count: number })
+          .count;
+      const before = Object.fromEntries(
+        [
+          'intelligence_runs',
+          'intelligence_run_attempts',
+          'editorial_execution_reservations',
+          'editorial_artifact_versions',
+          'audit_events',
+        ].map((table) => [table, count(table)]),
+      );
+      try {
+        for (let replay = 0; replay < 2; replay += 1) {
+          await expect(
+            h.service.execute('project', 'SCRIPT_CRITIC', command, key),
+          ).rejects.toMatchObject({
+            status: 422,
+            code: 'script_critic_language_not_supported',
+            stage: 'SCRIPT_CRITIC',
+            sourceLanguage: tag,
+          } satisfies Partial<ScriptCritiqueLanguageCapabilityError>);
+          expect(provider).not.toHaveBeenCalled();
+          expect(
+            h.database
+              .prepare('SELECT COUNT(*) count FROM intelligence_runs WHERE idempotency_key=?')
+              .get(key),
+          ).toEqual({ count: 0 });
+          expect(
+            h.database
+              .prepare(
+                "SELECT COUNT(*) count FROM editorial_execution_reservations WHERE envelope_id='envelope'",
+              )
+              .get(),
+          ).toEqual({ count: 0 });
+          expect(
+            h.database
+              .prepare(
+                "SELECT status,version FROM editorial_execution_envelopes WHERE id='envelope'",
+              )
+              .get(),
+          ).toEqual({ status: 'ACTIVE', version: 1 });
+          expect(
+            h.database
+              .prepare(
+                "SELECT COUNT(*) count FROM editorial_artifact_versions WHERE artifact_id='critique'",
+              )
+              .get(),
+          ).toEqual({ count: 1 });
+          for (const [table, baseline] of Object.entries(before))
+            expect(count(table)).toBe(baseline);
+        }
+        expect(h.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
       } finally {
         provider.mockRestore();
         h.database.close();

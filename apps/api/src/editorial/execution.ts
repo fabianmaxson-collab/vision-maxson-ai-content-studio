@@ -60,6 +60,7 @@ import {
   loadGovernedTerminalEnvelope,
 } from './governed-budget';
 import { z } from 'zod';
+import { critiqueLanguageFindings, scriptCritiqueSourcePrimaryLanguage } from './critique-language';
 import {
   invalidationFor,
   terminalInvalidationPlan,
@@ -350,6 +351,12 @@ Return sourceScriptVersionId and languageCode for the exact supplied source Scri
 Provide at least one non-empty strength. Issues may be empty only when no issue exists after evaluating every required dimension.
 For each issue use a required dimension, a severity, evidence type, confidence, a non-empty recommendation, and segmentOrders for segment-specific findings; use null only for genuinely global findings.
 Return only the strict structured output required by the supplied JSON schema.`;
+export const SCRIPT_CRITIQUE_LANGUAGE_POLICY_VERSION = 'script_critic_source_language_v2';
+export function scriptCritiqueLanguageInstructions(sourceLanguage: string) {
+  const language = scriptCritiqueSourcePrimaryLanguage(sourceLanguage);
+  const name = { de: 'German', es: 'Spanish', en: 'English' }[language];
+  return `Write ALL editorial free-text in ${name} (source Script language ${sourceLanguage}). This includes every strength, issue description, evidence prose, recommendation, suggested change, summary and other human-readable editorial text. Do not write these fields in another language. Machine identifiers, enum values, artifact and segment IDs, and dimension codes must retain their exact schema values. The project review language and human-supervision translation do not change this rule.`;
+}
 export const reviewTranslationPolicyInstructions = `Translate every source segment exactly once into natural Spanish.
 Preserve the source segment boundaries and order; do not merge, split, omit, or add segments.
 Do not summarize, add facts, omit facts, invent explanations, or change editorial intent.
@@ -769,6 +776,13 @@ function validateSemantics(
       critique.languageCode !== source.script.languageCode
     )
       throw new ProviderError('SCHEMA_VALIDATION', false, 'Script Critique provenance is invalid.');
+    const languageFindings = critiqueLanguageFindings(critique, source.script.languageCode);
+    if (languageFindings.length)
+      throw new ProviderError(
+        'SCHEMA_VALIDATION',
+        false,
+        `Script Critique editorial language is invalid: ${languageFindings.map((finding) => finding.field).join(', ')}.`,
+      );
     const maximumSegmentOrder = source.script.segments.length;
     if (
       critique.issues.some(
@@ -1096,6 +1110,11 @@ export class EditorialExecutionService {
         false,
         'The exact authoritative Critique source snapshot is required.',
       );
+    // Reject unsupported source languages before routing, Run, reservation, paid Attempt or dispatch.
+    const scriptCritiquePrimaryLanguage =
+      task === 'SCRIPT_CRITIC'
+        ? scriptCritiqueSourcePrimaryLanguage(critiqueSource!.script.languageCode)
+        : null;
     if (
       (task === 'SCRIPT_WRITER_SHORT' || task === 'SCRIPT_WRITER_LONG') &&
       (!scriptSourceBrief || command.inputArtifactVersionId !== scriptSourceBrief.versionId)
@@ -1254,7 +1273,7 @@ export class EditorialExecutionService {
       task === 'REVIEW_TRANSLATION_ES'
         ? `${prompt.templateText}\n\n${reviewTranslationPolicyInstructions}`
         : task === 'SCRIPT_CRITIC'
-          ? `${prompt.templateText}\n\n${scriptCritiquePolicyInstructions}`
+          ? `${prompt.templateText}\n\n${scriptCritiquePolicyInstructions}\n\n${scriptCritiqueLanguageInstructions(critiqueSource!.script.languageCode)}`
           : prompt.templateText;
     const providerMaterial = providerBoundRequestMaterial(
       effectivePromptTemplate,
@@ -1350,7 +1369,11 @@ export class EditorialExecutionService {
             ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
             : {}),
           ...(critiqueSource
-            ? { critiqueSourceSnapshot: critiqueSourceSnapshotEvidence(critiqueSource) }
+            ? {
+                critiqueSourceSnapshot: critiqueSourceSnapshotEvidence(critiqueSource),
+                scriptCritiqueLanguagePolicyVersion: SCRIPT_CRITIQUE_LANGUAGE_POLICY_VERSION,
+                scriptCritiqueSourcePrimaryLanguage: scriptCritiquePrimaryLanguage,
+              }
             : {}),
           ...(scriptRetryAuthorization
             ? {
@@ -1569,13 +1592,23 @@ export class EditorialExecutionService {
         const metadata = {
           commandHash,
           ...result.safeMetadata,
+          ...(task === 'SCRIPT_CRITIC'
+            ? {
+                scriptCritiqueLanguagePolicyVersion: SCRIPT_CRITIQUE_LANGUAGE_POLICY_VERSION,
+                scriptCritiqueSourcePrimaryLanguage: scriptCritiquePrimaryLanguage,
+              }
+            : {}),
           actualMicrousd: costs.actualMicrousd,
           accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
           ...(translationSource
             ? { translationSourceSnapshot: translationSourceSnapshotEvidence(translationSource) }
             : {}),
           ...(critiqueSource
-            ? { critiqueSourceSnapshot: critiqueSourceSnapshotEvidence(critiqueSource) }
+            ? {
+                critiqueSourceSnapshot: critiqueSourceSnapshotEvidence(critiqueSource),
+                scriptCritiqueLanguagePolicyVersion: SCRIPT_CRITIQUE_LANGUAGE_POLICY_VERSION,
+                scriptCritiqueSourcePrimaryLanguage: scriptCritiquePrimaryLanguage,
+              }
             : {}),
           cachedInputUnits: result.usage.cachedInputUnits,
           reasoningOutputUnits: result.usage.reasoningOutputUnits,
@@ -1693,6 +1726,12 @@ export class EditorialExecutionService {
       const metadata = {
         commandHash,
         ...result.safeMetadata,
+        ...(task === 'SCRIPT_CRITIC'
+          ? {
+              scriptCritiqueLanguagePolicyVersion: SCRIPT_CRITIQUE_LANGUAGE_POLICY_VERSION,
+              scriptCritiqueSourcePrimaryLanguage: scriptCritiquePrimaryLanguage,
+            }
+          : {}),
         actualMicrousd: costs.actualMicrousd,
         accountingPolicy: 'exact_decimal_total_ceil_microusd_v1',
         ...(translationSource
