@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import {
   closeSync,
   copyFileSync,
@@ -165,6 +165,43 @@ async function stopWorker(child: ChildProcessWithoutNullStreams, closed: Promise
     throw new Error(`Wrangler process ${child.pid} did not close after SIGKILL`);
 }
 
+async function applyLocalMigrations() {
+  const child = spawn(
+    process.execPath,
+    [
+      wrangler,
+      'd1',
+      'migrations',
+      'apply',
+      'vision-maxson-critic-capacity-regression',
+      '--local',
+      '--persist-to',
+      basePersistence,
+      '--config',
+      configPath,
+    ],
+    { cwd: root, env: wranglerEnvironment(), stdio: 'pipe' },
+  );
+  let output = '';
+  let processError: Error | null = null;
+  child.once('error', (error) => (processError = error));
+  child.stdout.on('data', (chunk) => (output += String(chunk)));
+  child.stderr.on('data', (chunk) => (output += String(chunk)));
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolveClose) => child.once('close', (code, signal) => resolveClose({ code, signal })),
+  );
+  const closedVoid = closed.then(() => undefined);
+  if (!(await waitForClose(closedVoid, 90_000))) {
+    await stopWorker(child, closedVoid);
+    throw new Error(`D1 local migration replay exceeded 90000ms\n${output}`);
+  }
+  const result = await closed;
+  if (processError || result.code !== 0)
+    throw new Error(
+      `D1 local migration replay failed (exit=${result.code}, signal=${result.signal})\n${String(processError ?? '')}\n${output}`,
+    );
+}
+
 async function withWorker<T>(scenario: string, run: (origin: string) => Promise<T>) {
   const persistence = join(temporaryRoot, `scenario-${scenario}`);
   cpSync(basePersistence, persistence, { recursive: true });
@@ -250,7 +287,7 @@ async function runConcurrentScenario(scenario: string): Promise<ConcurrentResult
   });
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   temporaryRoot = mkdtempSync(join(tmpdir(), 'vision-maxson-critic-capacity-d1-'));
   basePersistence = join(temporaryRoot, 'base-persistence');
   const migrations = join(temporaryRoot, 'migrations');
@@ -292,24 +329,7 @@ beforeAll(() => {
     ),
   );
 
-  const migration = spawnSync(
-    process.execPath,
-    [
-      wrangler,
-      'd1',
-      'migrations',
-      'apply',
-      'vision-maxson-critic-capacity-regression',
-      '--local',
-      '--persist-to',
-      basePersistence,
-      '--config',
-      configPath,
-    ],
-    { cwd: root, env: wranglerEnvironment(), encoding: 'utf8' },
-  );
-  if (migration.status !== 0)
-    throw new Error(`D1 local migration replay failed\n${migration.stdout}\n${migration.stderr}`);
+  await applyLocalMigrations();
 }, 120_000);
 
 afterAll(async () => {
@@ -343,8 +363,8 @@ describe('ScriptCriticCapacityService on Wrangler D1 local/workerd', () => {
   it('runs the production D1 batch and exact replay with bounded expression scale', async () => {
     const value = await runScenario('success');
     expect(value.error).toBeNull();
-    expect(value.sqlBytes).toEqual([3772, 4128, 4149]);
-    expect(value.bindingCounts).toEqual([13, 22, 15]);
+    expect(value.sqlBytes).toEqual([4040, 4396, 4417]);
+    expect(value.bindingCounts).toEqual([15, 24, 17]);
     expect(Math.max(...value.bindingCounts)).toBeLessThanOrEqual(100);
     expect(value.queryCount).toBe(6);
     expect(value.result).toMatchObject({
@@ -478,6 +498,17 @@ describe('ScriptCriticCapacityService on Wrangler D1 local/workerd', () => {
       new Set(['project', 'project-b']),
     );
     expect(value.state.receipts).toHaveLength(2);
+    expect(
+      new Set(
+        value.state.receipts.map((receipt) => {
+          const metadata = JSON.parse(receipt.metadataJson) as {
+            project: string;
+            successorBudgetCeilingMicroUsd: number;
+          };
+          return `${metadata.project}:${metadata.successorBudgetCeilingMicroUsd}`;
+        }),
+      ),
+    ).toEqual(new Set(['project:907875', 'project-b:1120000']));
     expect(value.state.reservations).toEqual([]);
     expectIntegrity(value.state);
   }, 60_000);
@@ -541,7 +572,7 @@ describe('ScriptCriticCapacityService on Wrangler D1 local/workerd', () => {
   it('keeps every winning workerd batch within D1 limits', async () => {
     const value = await runConcurrentScenario('different-keys-same-capacity');
     const winner = winningOperation(value);
-    expect(winner?.bindingCounts).toEqual([13, 22, 15]);
+    expect(winner?.bindingCounts).toEqual([15, 24, 17]);
     expect(winner?.sqlBytes).toHaveLength(3);
     expect(Math.max(...(winner?.bindingCounts ?? []))).toBeLessThanOrEqual(100);
     expect(winner?.sqlBytes?.every((bytes) => bytes > 0)).toBe(true);
@@ -783,6 +814,48 @@ describe('actual production Script Critic capacity HTTP route on workerd D1', ()
     });
   }, 60_000);
 
+  it('rejects foreign-workspace project, budget and historical envelope through workerd HTTP', async () => {
+    await withWorker('http-workspace-scope', async (origin) => {
+      await setupHttp(origin, 'workspace-scope');
+      const attacks = [
+        {
+          projectId: 'project-c',
+          command: {
+            ...canonicalCommand,
+            successorBudgetId: 'budget-successor-c',
+            consumedHistoricalEnvelopeId: 'historical-critic-c',
+          },
+          status: 404,
+        },
+        {
+          projectId: 'project',
+          command: { ...canonicalCommand, successorBudgetId: 'budget-successor-c' },
+          status: 404,
+        },
+        {
+          projectId: 'project',
+          command: { ...canonicalCommand, consumedHistoricalEnvelopeId: 'historical-critic-c' },
+          status: 409,
+        },
+      ];
+      for (const [index, attack] of attacks.entries()) {
+        const response = await postCapacity(
+          origin,
+          attack.projectId,
+          `foreign-workspace-${index}`,
+          attack.command,
+        );
+        expect(response.status).toBe(attack.status);
+      }
+      const metric = await httpMetrics(origin);
+      expect(metric.state!.envelopes).toEqual([]);
+      expect(metric.state!.receipts).toEqual([]);
+      expect(metric.state!.runs).toEqual([]);
+      expect(metric.state!.reservations).toEqual([]);
+      expectIntegrity(metric.state!);
+    });
+  }, 60_000);
+
   it('sanitizes unexpected storage error as HTTP 500', async () => {
     await withWorker('http-storage', async (origin) => {
       await setupHttp(origin, 'storage');
@@ -824,6 +897,82 @@ describe('actual production Script Critic capacity HTTP route on workerd D1', ()
       expect(metric.constructionCount).toBe(1);
       expect(metric.state!.envelopes).toHaveLength(1);
       expect(metric.state!.receipts).toHaveLength(1);
+    });
+  }, 60_000);
+});
+
+describe('chained Script Critic capacity on real local Wrangler D1', () => {
+  it('serializes same-key creation and authenticates replay without duplicate capacity', async () => {
+    await withWorker('chained-same', async (origin) => {
+      const value = await json<{
+        outcomes: Array<{ kind: string; result?: CapacityResult; message?: string }>;
+        activeCount: number;
+        auditCount: number;
+        foreignKeys: unknown[];
+        sqlBytes: number[];
+        bindingCounts: number[];
+      }>(await fetch(origin + '/chained/same', { method: 'POST' }), 'chained workerd scenario');
+      expect(value.outcomes.map((outcome) => outcome.kind)).toEqual(['result', 'result']);
+      expect(value.outcomes.map((outcome) => outcome.result?.idempotentReplay).sort()).toEqual([
+        false,
+        true,
+      ]);
+      expect(value.activeCount).toBe(1);
+      expect(value.auditCount).toBe(2);
+      expect(value.foreignKeys).toEqual([]);
+      expect(Math.max(...value.bindingCounts)).toBeLessThan(100);
+      expect(Math.max(...value.sqlBytes)).toBeLessThan(32768);
+    });
+  }, 60_000);
+
+  it('permits one winner for different keys on real local D1', async () => {
+    await withWorker('chained-different', async (origin) => {
+      const value = await json<{
+        outcomes: Array<{ kind: string; result?: CapacityResult; message?: string }>;
+        activeCount: number;
+        auditCount: number;
+        foreignKeys: unknown[];
+      }>(
+        await fetch(origin + '/chained/different', { method: 'POST' }),
+        'chained workerd contention',
+      );
+      expect(value.outcomes.filter((outcome) => outcome.kind === 'result')).toHaveLength(1);
+      expect(value.outcomes.filter((outcome) => outcome.kind === 'error')).toHaveLength(1);
+      expect(value.activeCount).toBe(1);
+      expect(value.auditCount).toBe(2);
+      expect(value.foreignKeys).toEqual([]);
+    });
+  }, 60_000);
+  it('creates independent capacities for concurrent projects with one shared key on real D1', async () => {
+    await withWorker('chained-multi', async (origin) => {
+      const value = await json<{
+        outcomes: Array<{ kind: string; result?: CapacityResult; message?: string }>;
+        rows: Array<{ projectId: string; budgetId: string; activeCount: number }>;
+        foreignKeys: unknown[];
+        sqlBytes: number[];
+        bindingCounts: number[];
+        queryCount: number;
+      }>(
+        await fetch(origin + '/chained/multi', { method: 'POST' }),
+        'chained multi-project workerd',
+      );
+      expect(value.outcomes.map((outcome) => outcome.kind)).toEqual(['result', 'result']);
+      expect(value.outcomes.map((outcome) => outcome.result?.idempotentReplay)).toEqual([
+        false,
+        false,
+      ]);
+      expect(value.rows).toEqual([
+        { projectId: 'local-project-b', budgetId: 'local-budget-b', activeCount: 1 },
+        {
+          projectId: 'project_2135b883-8499-48e9-a4a7-bb04b970d72a',
+          budgetId: 'project_execution_budget_e00c938b-5621-4ce4-ae74-eea07d9b5529',
+          activeCount: 1,
+        },
+      ]);
+      expect(value.foreignKeys).toEqual([]);
+      expect(Math.max(...value.bindingCounts)).toBeLessThanOrEqual(100);
+      expect(Math.max(...value.sqlBytes)).toBeLessThan(32768);
+      expect(value.queryCount).toBeLessThanOrEqual(250);
     });
   }, 60_000);
 });

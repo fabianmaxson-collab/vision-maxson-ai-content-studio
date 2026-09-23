@@ -1,4 +1,7 @@
-import type { ScriptCriticCapacityCommand } from '@vision-maxson/contracts';
+import {
+  scriptCriticCapacitySchema,
+  type ScriptCriticCapacityCommand,
+} from '@vision-maxson/contracts';
 import { hasPermission, newId } from '@vision-maxson/domain';
 import {
   governedTerminalStagePolicies,
@@ -26,21 +29,6 @@ const PROVIDER_KEY = 'openai';
 const MODEL_ID = 'model_openai_gpt_5_6_sol_20260903';
 const MODEL_KEY = 'gpt-5.6-sol';
 const PRICING_ID = 'pricing_model_openai_gpt_5_6_sol_20260903';
-const SUCCESSOR_CEILING_MICROUSD = 907_875;
-
-export type ScriptCriticCapacityPolicy = {
-  readonly workspaceId: string;
-  readonly projectId: string;
-  readonly successorBudgetId: string;
-  readonly historicalEnvelopeId: string;
-};
-
-const DEFAULT_POLICY: ScriptCriticCapacityPolicy = Object.freeze({
-  workspaceId: 'workspace_primary',
-  projectId: 'project_2135b883-8499-48e9-a4a7-bb04b970d72a',
-  successorBudgetId: 'project_execution_budget_e00c938b-5621-4ce4-ae74-eea07d9b5529',
-  historicalEnvelopeId: 'execution_envelope_cf4d27f4-2296-4b0d-9ba7-7893bd21dc38',
-});
 
 export type ScriptCriticCapacityResult = {
   envelope: {
@@ -126,8 +114,12 @@ function snapshotSql() {
  h.profile_key historicalProfileKey,h.profile_version historicalProfileVersion,
  h.provider_id historicalProviderId,h.provider_model_id historicalModelId,
  h.currency historicalCurrency,h.monetary_ceiling_microusd historicalCeiling,
- h.maximum_calls historicalMaximumCalls,h.status historicalStatus,h.version historicalVersion,
- hb.status historicalBudgetStatus,hb.version historicalBudgetVersion,
+ h.maximum_calls historicalMaximumCalls,h.stage_key historicalStage,h.status historicalStatus,h.version historicalVersion,
+ (SELECT count(*) FROM audit_events ca WHERE ca.resource_id=h.id
+   AND ca.action='${SCRIPT_CRITIC_CAPACITY_OPERATION}' AND ca.outcome='success') historicalCapacityCount,
+ hb.workspace_id historicalBudgetWorkspace,hb.project_id historicalBudgetProject,
+ hb.profile_key historicalBudgetProfileKey,hb.profile_version historicalBudgetProfileVersion,
+ hb.currency historicalBudgetCurrency,hb.status historicalBudgetStatus,hb.version historicalBudgetVersion,
  p.key providerKey,p.status providerStatus,
  m.model_key modelKey,m.status modelStatus,m.capabilities_json capabilitiesJson,
  ps.id pricingId,ps.currency pricingCurrency,ps.input_unit_price inputUnitPrice,
@@ -204,7 +196,6 @@ function snapshotValid(
   actor: EditorialActor,
   projectId: string,
   command: ScriptCriticCapacityCommand,
-  policy: ScriptCriticCapacityPolicy,
 ) {
   if (!row || !policyValid()) return false;
   const calculatedCeiling = (() => {
@@ -216,10 +207,6 @@ function snapshotValid(
   })();
   if (calculatedCeiling === null) return false;
   return (
-    actor.workspaceId === policy.workspaceId &&
-    projectId === policy.projectId &&
-    command.successorBudgetId === policy.successorBudgetId &&
-    command.consumedHistoricalEnvelopeId === policy.historicalEnvelopeId &&
     row.workspaceId === actor.workspaceId &&
     row.projectId === projectId &&
     row.profileKey === PROFILE_KEY &&
@@ -227,7 +214,8 @@ function snapshotValid(
     row.currency === 'USD' &&
     row.status === command.expectedBudgetStatus &&
     integer(row, 'version') === command.expectedBudgetVersion &&
-    integer(row, 'ceiling') === SUCCESSOR_CEILING_MICROUSD &&
+    Number.isSafeInteger(integer(row, 'ceiling')) &&
+    integer(row, 'ceiling') >= SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD &&
     integer(row, 'available') >= SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD &&
     integer(row, 'reservationCount') === 0 &&
     integer(row, 'ambiguousCount') === 0 &&
@@ -244,8 +232,15 @@ function snapshotValid(
     row.historicalCurrency === 'USD' &&
     integer(row, 'historicalCeiling') === SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD &&
     integer(row, 'historicalMaximumCalls') === 1 &&
+    row.historicalStage === STAGE_KEY &&
+    integer(row, 'historicalCapacityCount') === 0 &&
     row.historicalStatus === 'CONSUMED' &&
     integer(row, 'historicalVersion') === 2 &&
+    row.historicalBudgetWorkspace === actor.workspaceId &&
+    row.historicalBudgetProject === projectId &&
+    row.historicalBudgetProfileKey === PROFILE_KEY &&
+    integer(row, 'historicalBudgetProfileVersion') === 1 &&
+    row.historicalBudgetCurrency === 'USD' &&
     row.historicalBudgetStatus === 'CONSUMED' &&
     integer(row, 'historicalBudgetVersion') === 2 &&
     row.providerKey === PROVIDER_KEY &&
@@ -265,8 +260,8 @@ function snapshotValid(
 
 function guardSql(expectedEnvelopeCount: 0 | 1) {
   return `b.profile_key='${PROFILE_KEY}' AND b.profile_version=1
- AND b.currency='USD' AND b.status='ACTIVE' AND b.version=1
- AND b.monetary_ceiling_microusd=${SUCCESSOR_CEILING_MICROUSD}
+ AND b.currency='USD' AND b.status='ACTIVE' AND b.version=?
+ AND b.monetary_ceiling_microusd=?
  AND b.monetary_ceiling_microusd-${committedSql('b')}>=${SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD}
  AND (SELECT count(*) FROM editorial_execution_reservations r WHERE r.project_execution_budget_id=b.id)=0
  AND (SELECT count(*) FROM editorial_execution_reservations r WHERE r.project_execution_budget_id=b.id AND r.status='AMBIGUOUS')=0
@@ -283,7 +278,11 @@ function guardSql(expectedEnvelopeCount: 0 | 1) {
      AND h.provider_id='${PROVIDER_ID}' AND h.provider_model_id='${MODEL_ID}' AND h.currency='USD'
      AND h.monetary_ceiling_microusd=${SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD}
      AND h.maximum_calls=1 AND h.stage_key='SCRIPT_CRITIC' AND h.status='CONSUMED' AND h.version=2
-     AND hb.workspace_id=b.workspace_id AND hb.project_id=b.project_id AND hb.status='CONSUMED' AND hb.version=2)
+     AND hb.workspace_id=b.workspace_id AND hb.project_id=b.project_id
+     AND hb.profile_key='${PROFILE_KEY}' AND hb.profile_version=1 AND hb.currency='USD'
+     AND hb.status='CONSUMED' AND hb.version=2
+     AND NOT EXISTS(SELECT 1 FROM audit_events ca WHERE ca.resource_id=h.id
+       AND ca.action='${SCRIPT_CRITIC_CAPACITY_OPERATION}' AND ca.outcome='success'))
  AND EXISTS(SELECT 1 FROM ai_providers p JOIN ai_provider_models m ON m.provider_id=p.id
    JOIN ai_pricing_snapshots ps ON ps.provider_model_id=m.id
    WHERE p.id='${PROVIDER_ID}' AND p.key='${PROVIDER_KEY}' AND p.status='configured'
@@ -302,7 +301,6 @@ export class ScriptCriticCapacityService {
     private readonly db: D1Database,
     private readonly actor: EditorialActor,
     private readonly context: AuditContext,
-    private readonly policy: ScriptCriticCapacityPolicy = DEFAULT_POLICY,
   ) {}
 
   private snapshot(projectId: string, command: ScriptCriticCapacityCommand) {
@@ -326,6 +324,7 @@ export class ScriptCriticCapacityService {
     projectId: string,
     key: string,
     expectedCommandHash: string,
+    command: ScriptCriticCapacityCommand,
   ): Promise<ScriptCriticCapacityResult | null> {
     const row = await this.db
       .prepare(
@@ -336,7 +335,9 @@ export class ScriptCriticCapacityService {
           e.id envelopeId,e.workspace_id envelopeWorkspace,e.project_id envelopeProject,
           e.project_execution_budget_id budgetId,e.profile_key profileKey,e.profile_version profileVersion,
           e.provider_id providerId,e.provider_model_id modelId,e.currency,e.monetary_ceiling_microusd ceiling,
-          e.maximum_calls maximumCalls,e.status envelopeStatus,e.version envelopeVersion,
+          e.maximum_calls maximumCalls,(SELECT count(*) FROM editorial_execution_reservations rr WHERE rr.envelope_id=e.id) usedCalls,e.status envelopeStatus,e.version envelopeVersion,
+          b.workspace_id budgetWorkspace,b.project_id budgetProject,
+          b.profile_key budgetProfileKey,b.profile_version budgetProfileVersion,b.currency budgetCurrency,
           b.status budgetStatus,b.version budgetVersion,b.monetary_ceiling_microusd budgetCeiling,
           h.project_execution_budget_id historicalBudgetId,
           h.workspace_id historicalWorkspace,h.project_id historicalProject,
@@ -345,7 +346,11 @@ export class ScriptCriticCapacityService {
           h.currency historicalCurrency,h.monetary_ceiling_microusd historicalCeiling,
           h.maximum_calls historicalMaximumCalls,h.stage_key historicalStage,
           h.status historicalStatus,h.version historicalVersion,
-          hb.status historicalBudgetStatus,hb.version historicalBudgetVersion,
+          (SELECT count(*) FROM audit_events ca WHERE ca.resource_id=h.id
+            AND ca.action='${SCRIPT_CRITIC_CAPACITY_OPERATION}' AND ca.outcome='success') historicalCapacityCount,
+          hb.workspace_id historicalBudgetWorkspace,hb.project_id historicalBudgetProject,
+          hb.profile_key historicalBudgetProfileKey,hb.profile_version historicalBudgetProfileVersion,
+          hb.currency historicalBudgetCurrency,hb.status historicalBudgetStatus,hb.version historicalBudgetVersion,
           p.key providerKey,p.status providerStatus,
           m.model_key modelKey,m.status modelStatus,m.capabilities_json capabilitiesJson,
           ps.currency pricingCurrency,ps.input_unit_price inputUnitPrice,ps.output_unit_price outputUnitPrice,
@@ -376,7 +381,7 @@ export class ScriptCriticCapacityService {
         LEFT JOIN ai_pricing_snapshots ps ON ps.id='${PRICING_ID}' AND ps.provider_model_id=m.id
         WHERE a.id=? AND a.workspace_id=?`,
       )
-      .bind(this.policy.historicalEnvelopeId, auditEventId, this.actor.workspaceId)
+      .bind(command.consumedHistoricalEnvelopeId, auditEventId, this.actor.workspaceId)
       .first<Row>();
     if (!row) return null;
     if (typeof row.metadataJson !== 'string')
@@ -389,18 +394,20 @@ export class ScriptCriticCapacityService {
     } catch {
       throw new ScriptCriticCapacityError(409, 'script_critic_capacity_receipt_invalid');
     }
-    const storedCommand: ScriptCriticCapacityCommand = {
-      successorBudgetId: String(metadata.successorBudgetId),
-      expectedBudgetVersion: 1,
-      expectedBudgetStatus: 'ACTIVE',
-      consumedHistoricalEnvelopeId: String(metadata.historicalEnvelopeId),
-      reason: 'REPLACEMENT_SCRIPT_CRITIC_CAPACITY',
-    };
-    const storedHash = await canonicalCommandHash(
-      String(metadata.workspace),
-      String(metadata.project),
-      storedCommand,
-    );
+    const storedCommand = scriptCriticCapacitySchema.safeParse({
+      successorBudgetId: metadata.successorBudgetId,
+      expectedBudgetVersion: metadata.successorBudgetVersion,
+      expectedBudgetStatus: metadata.successorBudgetStatus,
+      consumedHistoricalEnvelopeId: metadata.historicalEnvelopeId,
+      reason: metadata.reason,
+    });
+    const storedHash = storedCommand.success
+      ? await canonicalCommandHash(
+          String(metadata.workspace),
+          String(metadata.project),
+          storedCommand.data,
+        )
+      : null;
     const result = metadata.result;
     const resultRecord = isRecord(result) ? result : null;
     const resultEnvelope =
@@ -436,8 +443,29 @@ export class ScriptCriticCapacityService {
       metadata.accessSubject !== this.context.accessSubject ||
       metadata.environment !== this.context.environment ||
       metadata.requestId !== row.requestId ||
-      metadata.successorBudgetId !== this.policy.successorBudgetId ||
-      metadata.historicalEnvelopeId !== this.policy.historicalEnvelopeId ||
+      metadata.successorBudgetId !== command.successorBudgetId ||
+      metadata.successorBudgetVersion !== command.expectedBudgetVersion ||
+      metadata.successorBudgetStatus !== command.expectedBudgetStatus ||
+      metadata.successorBudgetCeilingMicroUsd !== integer(row, 'budgetCeiling') ||
+      metadata.reason !== command.reason ||
+      metadata.historicalEnvelopeId !== command.consumedHistoricalEnvelopeId ||
+      metadata.historicalEnvelopeStatus !== 'CONSUMED' ||
+      metadata.historicalEnvelopeVersion !== 2 ||
+      metadata.newEnvelopeId !== row.envelopeId ||
+      metadata.stageKey !== STAGE_KEY ||
+      metadata.profileKey !== PROFILE_KEY ||
+      metadata.profileVersion !== 1 ||
+      metadata.providerId !== PROVIDER_ID ||
+      metadata.providerKey !== PROVIDER_KEY ||
+      metadata.modelId !== MODEL_ID ||
+      metadata.modelKey !== MODEL_KEY ||
+      metadata.monetaryCeilingMicroUsd !== SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD ||
+      metadata.currency !== 'USD' ||
+      metadata.maximumCalls !== 1 ||
+      !Number.isSafeInteger(integer(metadata, 'availableBudgetBeforeMicroUsd')) ||
+      integer(metadata, 'availableBudgetBeforeMicroUsd') <
+        SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD ||
+      integer(metadata, 'availableBudgetBeforeMicroUsd') > integer(row, 'budgetCeiling') ||
       metadata.pricingSnapshotId !== PRICING_ID ||
       metadata.reasoningEffort !== 'high' ||
       integer(metadata, 'maximumAttempts') !== 1 ||
@@ -448,7 +476,7 @@ export class ScriptCriticCapacityService {
       resultRecord.auditEventId !== auditEventId ||
       resultRecord.idempotentReplay !== false ||
       resultEnvelope.id !== row.resourceId ||
-      resultEnvelope.projectExecutionBudgetId !== this.policy.successorBudgetId ||
+      resultEnvelope.projectExecutionBudgetId !== command.successorBudgetId ||
       resultEnvelope.stageKey !== STAGE_KEY ||
       resultEnvelope.status !== 'ACTIVE' ||
       integer(resultEnvelope, 'version') !== 1 ||
@@ -459,7 +487,12 @@ export class ScriptCriticCapacityService {
       row.envelopeId !== row.resourceId ||
       row.envelopeWorkspace !== this.actor.workspaceId ||
       row.envelopeProject !== projectId ||
-      row.budgetId !== this.policy.successorBudgetId ||
+      row.budgetId !== command.successorBudgetId ||
+      row.budgetWorkspace !== this.actor.workspaceId ||
+      row.budgetProject !== projectId ||
+      row.budgetProfileKey !== PROFILE_KEY ||
+      integer(row, 'budgetProfileVersion') !== 1 ||
+      row.budgetCurrency !== 'USD' ||
       row.profileKey !== PROFILE_KEY ||
       integer(row, 'profileVersion') !== 1 ||
       row.providerId !== PROVIDER_ID ||
@@ -467,12 +500,24 @@ export class ScriptCriticCapacityService {
       row.currency !== 'USD' ||
       integer(row, 'ceiling') !== SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD ||
       integer(row, 'maximumCalls') !== 1 ||
-      row.envelopeStatus !== 'ACTIVE' ||
-      integer(row, 'envelopeVersion') !== 1 ||
-      row.budgetStatus !== 'ACTIVE' ||
-      integer(row, 'budgetVersion') !== 1 ||
-      integer(row, 'budgetCeiling') !== SUCCESSOR_CEILING_MICROUSD ||
-      row.historicalBudgetId === this.policy.successorBudgetId ||
+      !(
+        (row.envelopeStatus === 'ACTIVE' &&
+          integer(row, 'envelopeVersion') === 1 &&
+          integer(row, 'usedCalls') === 0) ||
+        (row.envelopeStatus === 'CONSUMED' &&
+          integer(row, 'envelopeVersion') === 2 &&
+          integer(row, 'usedCalls') === 1)
+      ) ||
+      row.budgetStatus !== command.expectedBudgetStatus ||
+      integer(row, 'budgetVersion') !== command.expectedBudgetVersion ||
+      !Number.isSafeInteger(integer(row, 'budgetCeiling')) ||
+      integer(row, 'budgetCeiling') < SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD ||
+      row.historicalBudgetId === command.successorBudgetId ||
+      row.historicalBudgetWorkspace !== this.actor.workspaceId ||
+      row.historicalBudgetProject !== projectId ||
+      row.historicalBudgetProfileKey !== PROFILE_KEY ||
+      integer(row, 'historicalBudgetProfileVersion') !== 1 ||
+      row.historicalBudgetCurrency !== 'USD' ||
       row.historicalWorkspace !== this.actor.workspaceId ||
       row.historicalProject !== projectId ||
       row.historicalProfileKey !== PROFILE_KEY ||
@@ -483,6 +528,7 @@ export class ScriptCriticCapacityService {
       integer(row, 'historicalCeiling') !== SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD ||
       integer(row, 'historicalMaximumCalls') !== 1 ||
       row.historicalStage !== STAGE_KEY ||
+      integer(row, 'historicalCapacityCount') !== 0 ||
       row.historicalStatus !== 'CONSUMED' ||
       integer(row, 'historicalVersion') !== 2 ||
       row.historicalBudgetStatus !== 'CONSUMED' ||
@@ -494,9 +540,6 @@ export class ScriptCriticCapacityService {
       !capabilitiesValid(row.capabilitiesJson) ||
       replayCeiling !== SCRIPT_CRITIC_CAPACITY_CEILING_MICROUSD ||
       !policyValid() ||
-      integer(row, 'reservationCount') !== 0 ||
-      integer(row, 'envelopeCount') !== 1 ||
-      integer(row, 'activeCriticCount') !== 1 ||
       integer(row, 'receiptCount') !== 1
     )
       throw new ScriptCriticCapacityError(409, 'script_critic_capacity_receipt_invalid');
@@ -519,20 +562,13 @@ export class ScriptCriticCapacityService {
       projectId,
       command,
     );
-    const prior = await this.replay(auditEventId, projectId, key, expectedCommandHash);
+    const prior = await this.replay(auditEventId, projectId, key, expectedCommandHash, command);
     if (prior) return prior;
 
-    if (
-      this.actor.workspaceId !== this.policy.workspaceId ||
-      projectId !== this.policy.projectId ||
-      command.successorBudgetId !== this.policy.successorBudgetId ||
-      command.consumedHistoricalEnvelopeId !== this.policy.historicalEnvelopeId
-    )
-      throw new ScriptCriticCapacityError(404, 'script_critic_capacity_source_not_found');
     const before = await this.snapshot(projectId, command);
     if (!before)
       throw new ScriptCriticCapacityError(404, 'script_critic_capacity_source_not_found');
-    if (!snapshotValid(before, this.actor, projectId, command, this.policy))
+    if (!snapshotValid(before, this.actor, projectId, command))
       throw new ScriptCriticCapacityError(409, 'script_critic_capacity_snapshot_invalid');
 
     const envelopeId = newId('execution_envelope');
@@ -559,7 +595,7 @@ export class ScriptCriticCapacityService {
       successorBudgetId: command.successorBudgetId,
       successorBudgetVersion: command.expectedBudgetVersion,
       successorBudgetStatus: command.expectedBudgetStatus,
-      successorBudgetCeilingMicroUsd: SUCCESSOR_CEILING_MICROUSD,
+      successorBudgetCeilingMicroUsd: integer(before, 'ceiling'),
       availableBudgetBeforeMicroUsd: integer(before, 'available'),
       historicalEnvelopeId: command.consumedHistoricalEnvelopeId,
       historicalEnvelopeVersion: 2,
@@ -630,6 +666,8 @@ export class ScriptCriticCapacityService {
       THEN 1 ELSE json('script_critic_capacity_final_guard_failed') END`;
 
     const guardBindings = [
+      command.expectedBudgetVersion,
+      integer(before, 'ceiling'),
       this.actor.id,
       this.actor.id,
       this.context.accessIssuer,
@@ -689,7 +727,13 @@ export class ScriptCriticCapacityService {
       ]);
     } catch (batchError) {
       try {
-        const concurrent = await this.replay(auditEventId, projectId, key, expectedCommandHash);
+        const concurrent = await this.replay(
+          auditEventId,
+          projectId,
+          key,
+          expectedCommandHash,
+          command,
+        );
         if (concurrent) return concurrent;
       } catch (recoveryError) {
         if (recoveryError instanceof ScriptCriticCapacityError) throw recoveryError;
@@ -702,7 +746,7 @@ export class ScriptCriticCapacityService {
       } catch {
         throw batchError;
       }
-      if (!snapshotValid(after, this.actor, projectId, command, this.policy))
+      if (!snapshotValid(after, this.actor, projectId, command))
         throw new ScriptCriticCapacityError(409, 'script_critic_capacity_conflict');
       throw batchError;
     }

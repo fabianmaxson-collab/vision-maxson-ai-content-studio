@@ -1,8 +1,8 @@
 import { createApp } from '../src/app';
+import { ChainedScriptCriticCapacityService } from '../src/editorial/script-critic-chained-capacity';
 import {
   ScriptCriticCapacityError,
   ScriptCriticCapacityService,
-  type ScriptCriticCapacityPolicy,
   type ScriptCriticCapacityResult,
 } from '../src/editorial/script-critic-capacity';
 
@@ -90,19 +90,25 @@ const context = {
   accessIssuer: 'https://access.example.test',
   accessSubject: 'owner-subject',
 };
-const policy: ScriptCriticCapacityPolicy = {
+type FixtureScope = {
+  workspaceId: string;
+  projectId: string;
+  successorBudgetId: string;
+  historicalEnvelopeId: string;
+};
+const policy: FixtureScope = {
   workspaceId: 'workspace',
   projectId: 'project',
   successorBudgetId: 'budget-successor',
   historicalEnvelopeId: 'historical-critic',
 };
-const policyB: ScriptCriticCapacityPolicy = {
+const policyB: FixtureScope = {
   workspaceId: 'workspace',
   projectId: 'project-b',
   successorBudgetId: 'budget-successor-b',
   historicalEnvelopeId: 'historical-critic-b',
 };
-const changedCommandPolicy: ScriptCriticCapacityPolicy = {
+const changedCommandPolicy: FixtureScope = {
   ...policy,
   historicalEnvelopeId: 'historical-critic-changed',
 };
@@ -261,8 +267,35 @@ async function seedSecondProject(database: D1Database) {
       id,workspace_id,project_id,profile_key,profile_version,currency,
       monetary_ceiling_microusd,status,authorized_by,created_at,updated_at,version)
       VALUES('budget-successor-b','workspace','project-b','phase3_terminal_graph_v1',1,'USD',
-        907875,'ACTIVE','owner','t','t',1);
+        1120000,'ACTIVE','owner','t','t',1);
   `,
+  );
+}
+
+async function seedForeignWorkspaceProject(database: D1Database) {
+  await executeSql(
+    database,
+    `
+    INSERT INTO workspaces(id,slug,name,created_at,updated_at)
+      VALUES('workspace-b','workspace-b','Workspace B','t','t');
+    INSERT INTO users(id,workspace_id,email,status,created_at,updated_at)
+      VALUES('owner-b','workspace-b','owner-b@example.test','active','t','t');
+    INSERT INTO user_roles(workspace_id,user_id,role_id,created_at)
+      SELECT 'workspace-b','owner-b',id,'t' FROM roles WHERE key='owner';
+    INSERT INTO content_brands(id,workspace_id,name,normalized_name,primary_language,created_at,updated_at,created_by)
+      VALUES('brand-b','workspace-b','Brand B','brand-b','de','t','t','owner-b');
+    INSERT INTO channel_profiles(id,workspace_id,content_brand_id,name,normalized_name,primary_language,created_at,updated_at,created_by)
+      VALUES('channel-b','workspace-b','brand-b','Channel B','channel-b','de','t','t','owner-b');
+    INSERT INTO projects(id,workspace_id,content_brand_id,channel_profile_id,title,format,operating_mode,status,primary_language,readiness_status,created_at,updated_at,created_by)
+      VALUES('project-c','workspace-b','brand-b','channel-b','Project C','SHORT','ASSISTED','ANALYZING','de','ready','t','t','owner-b');
+    INSERT INTO editorial_project_execution_budgets(id,workspace_id,project_id,profile_key,profile_version,currency,monetary_ceiling_microusd,status,authorized_by,created_at,updated_at,version)
+      VALUES('budget-old-c','workspace-b','project-c','phase3_terminal_graph_v1',1,'USD',1331520,'ACTIVE','owner-b','t','t',1);
+    INSERT INTO editorial_execution_envelopes(id,workspace_id,project_id,profile_key,profile_version,provider_id,provider_model_id,currency,monetary_ceiling_microusd,maximum_calls,status,authorized_by,created_at,updated_at,version,project_execution_budget_id,stage_key)
+      VALUES('historical-critic-c','workspace-b','project-c','phase3_terminal_graph_v1',1,'provider_openai','model_openai_gpt_5_6_sol_20260903','USD',403840,1,'CONSUMED','owner-b','t','t',2,'budget-old-c','SCRIPT_CRITIC');
+    UPDATE editorial_project_execution_budgets SET status='CONSUMED',version=2 WHERE id='budget-old-c';
+    INSERT INTO editorial_project_execution_budgets(id,workspace_id,project_id,profile_key,profile_version,currency,monetary_ceiling_microusd,status,authorized_by,created_at,updated_at,version)
+      VALUES('budget-successor-c','workspace-b','project-c','phase3_terminal_graph_v1',1,'USD',740000,'ACTIVE','owner-b','t','t',1);
+    `,
   );
 }
 
@@ -272,7 +305,7 @@ async function state(database: D1Database) {
       `SELECT id,project_id projectId,project_execution_budget_id budgetId,stage_key stageKey,
         status,version,maximum_calls maximumCalls,monetary_ceiling_microusd ceiling
        FROM editorial_execution_envelopes
-       WHERE project_execution_budget_id IN ('budget-successor','budget-successor-b')
+       WHERE project_execution_budget_id IN ('budget-successor','budget-successor-b','budget-successor-c')
        ORDER BY project_id,id`,
     )
     .all<JsonRow>();
@@ -286,7 +319,7 @@ async function state(database: D1Database) {
   const historicalEnvelopes = await database
     .prepare(
       `SELECT id,status,version FROM editorial_execution_envelopes
-       WHERE id IN ('historical-critic','historical-critic-changed','historical-critic-b')
+       WHERE id IN ('historical-critic','historical-critic-changed','historical-critic-b','historical-critic-c')
        ORDER BY id`,
     )
     .all<JsonRow>();
@@ -294,14 +327,14 @@ async function state(database: D1Database) {
     .prepare(
       `SELECT id,project_execution_budget_id budgetId,reserved_microusd reservedMicrousd,status
        FROM editorial_execution_reservations
-       WHERE project_execution_budget_id IN ('budget-successor','budget-successor-b')
+       WHERE project_execution_budget_id IN ('budget-successor','budget-successor-b','budget-successor-c')
        ORDER BY id`,
     )
     .all<JsonRow>();
   const runs = await database
     .prepare(
       `SELECT id,project_id projectId,status FROM intelligence_runs
-       WHERE project_id IN ('project','project-b') ORDER BY id`,
+       WHERE project_id IN ('project','project-b','project-c') ORDER BY id`,
     )
     .all<JsonRow>();
   const foreignKeys = await database.prepare('PRAGMA foreign_key_check').all<JsonRow>();
@@ -322,7 +355,6 @@ async function execute(database: D1Database, scenario: Scenario) {
     instrumented as unknown as D1Database,
     owner,
     context,
-    policy,
   );
   let result: ScriptCriticCapacityResult | null = null;
   let replay: ScriptCriticCapacityResult | null = null;
@@ -487,12 +519,10 @@ async function operation(database: D1Database, scenario: ConcurrentScenario, flo
       }
     : undefined;
   const instrumented = new InstrumentedD1(database, 'success', beforeBatch);
-  const service = new ScriptCriticCapacityService(
-    instrumented as unknown as D1Database,
-    owner,
-    { ...context, requestId: `request-${scenario}-${flow}` },
-    selectedPolicy,
-  );
+  const service = new ScriptCriticCapacityService(instrumented as unknown as D1Database, owner, {
+    ...context,
+    requestId: `request-${scenario}-${flow}`,
+  });
   try {
     return {
       kind: 'result',
@@ -529,7 +559,13 @@ const verifyLocalIdentity = (token: string) => {
 };
 
 type HttpScenario =
-  ConcurrentScenario | 'default' | 'scope' | 'rbac' | 'storage' | 'factory-safety';
+  | ConcurrentScenario
+  | 'default'
+  | 'scope'
+  | 'rbac'
+  | 'storage'
+  | 'factory-safety'
+  | 'workspace-scope';
 let routeApp: ReturnType<typeof createApp> | null = null;
 let routeScenario: HttpScenario = 'default';
 let constructionCount = 0;
@@ -548,12 +584,6 @@ function routeFactory(
 ) {
   const flow = constructionCount++ === 0 ? 'a' : 'b';
   const changed = routeScenario.startsWith('same-key-changed-command-');
-  const selectedPolicy =
-    routeScenario === 'cross-project-same-key' && flow === 'b'
-      ? policyB
-      : changed && flow === 'b'
-        ? changedCommandPolicy
-        : policy;
   const preferredFlow = routeScenario.endsWith('changed-first') ? 'b' : 'a';
   const concurrent = [
     'same-key-same-command',
@@ -586,7 +616,6 @@ function routeFactory(
     instrumented as unknown as D1Database,
     actor,
     auditContext,
-    selectedPolicy,
   );
   const originalProvision = service.provision.bind(service);
   service.provision = async (...args) => {
@@ -602,10 +631,281 @@ function routeFactory(
   return service;
 }
 
+async function chainedLocalScenario(database: D1Database, scenario: string) {
+  await seed(database, true);
+  const projectId = 'project_2135b883-8499-48e9-a4a7-bb04b970d72a';
+  const budgetId = 'project_execution_budget_e00c938b-5621-4ce4-ae74-eea07d9b5529';
+  const owner = { id: 'owner', workspaceId: 'workspace_primary', roles: ['owner' as const] };
+  const context = {
+    requestId: 'local-chained-capacity',
+    environment: 'test',
+    accessIssuer: 'https://access.example.test',
+    accessSubject: 'owner-subject',
+  };
+  const firstService = new ScriptCriticCapacityService(database, owner, context);
+  const first = await firstService.provision(projectId, 'local-first-capacity', {
+    successorBudgetId: budgetId,
+    expectedBudgetVersion: 1,
+    expectedBudgetStatus: 'ACTIVE',
+    consumedHistoricalEnvelopeId: 'execution_envelope_cf4d27f4-2296-4b0d-9ba7-7893bd21dc38',
+    reason: 'REPLACEMENT_SCRIPT_CRITIC_CAPACITY',
+  });
+  await executeSql(
+    database,
+    'INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,current_version_id,status,created_at,updated_at,version,created_by,updated_by) ' +
+      "VALUES('local-script','workspace_primary','" +
+      projectId +
+      "','PRODUCTION_SCRIPT','local-script-v3','approved','t','t',3,'owner','owner');" +
+      'INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_text,source_type,content_hash,created_at,created_by) ' +
+      "VALUES('local-script-v3','workspace_primary','local-script',3,'de','Deutscher Kurzfilm.','HUMAN_EDITED','" +
+      'a'.repeat(64) +
+      "','t','owner');" +
+      'INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at) ' +
+      "VALUES('local-script-approval','workspace_primary','local-script-v3','APPROVED','owner','owner','t');" +
+      'INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,current_version_id,status,created_at,updated_at,version,created_by,updated_by) ' +
+      "VALUES('local-critique','workspace_primary','" +
+      projectId +
+      "','SCRIPT_CRITIQUE','local-critique-v2','active','t','t',2,'owner','owner');" +
+      'INSERT INTO intelligence_runs(id,workspace_id,project_id,task_type,provider_id,provider_model_id,input_artifact_version_id,output_artifact_version_id,initiated_by,operating_mode,status,idempotency_key,creative_regeneration_number,safe_metadata_json,created_at,updated_at,version) ' +
+      "VALUES('local-critic-run','workspace_primary','" +
+      projectId +
+      "','SCRIPT_CRITIC','provider_openai','model_openai_gpt_5_6_sol_20260903','local-script-v3','local-critique-v2','owner','ASSISTED','QUEUED','local-critic-key',0,'{}','t','t',1)",
+  );
+  const critique = {
+    sourceScriptVersionId: 'local-script-v3',
+    languageCode: 'de',
+    strengths: ['El guion tiene una narración clara para el público y funciona bien.'],
+    issues: [],
+    dimensionsEvaluated: [
+      'FACTUAL_CONSISTENCY',
+      'BRIEF_ALIGNMENT',
+      'RESEARCH_ALIGNMENT',
+      'CLARITY',
+      'HOOK',
+      'PACING',
+      'REDUNDANCY',
+      'CTA',
+      'TECHNICAL_ACCURACY',
+      'SHORT_FORMAT_SUITABILITY',
+      'LANGUAGE_AND_EDITORIAL_CONSTRAINTS',
+    ],
+  };
+  await database
+    .prepare(
+      'INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_json,source_type,intelligence_run_id,content_hash,source_script_version_id,created_at,created_by) ' +
+        "VALUES('local-critique-v2','workspace_primary','local-critique',2,'de',?,'AI_GENERATED','local-critic-run',?,NULL,'t','owner')",
+    )
+    .bind(JSON.stringify(critique), 'b'.repeat(64))
+    .run();
+  await executeSql(
+    database,
+    'INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version) ' +
+      "VALUES('local-critique-dependency','workspace_primary','local-script-v3','local-critique-v2','EVALUATES_SOURCE','CURRENT','t','t',1);" +
+      'INSERT INTO intelligence_run_attempts(id,intelligence_run_id,attempt_number,attempt_kind,status,safe_metadata_json,started_at,completed_at) ' +
+      "VALUES('local-critic-attempt','local-critic-run',1,'TECHNICAL','SUCCEEDED','{}','t','t')",
+  );
+  await database
+    .prepare(
+      'INSERT INTO editorial_execution_reservations(id,envelope_id,workspace_id,project_id,intelligence_run_id,step_key,pricing_snapshot_id,reserved_microusd,actual_microusd,status,created_at,project_execution_budget_id) ' +
+        "VALUES('local-critic-reservation',?,'workspace_primary',?,'local-critic-run','SCRIPT_CRITIC','pricing_model_openai_gpt_5_6_sol_20260903',403840,53004,'RECONCILED','t',?)",
+    )
+    .bind(first.envelope.id, projectId, budgetId)
+    .run();
+  await database
+    .prepare("UPDATE editorial_execution_envelopes SET status='CONSUMED',version=2 WHERE id=?")
+    .bind(first.envelope.id)
+    .run();
+  await executeSql(
+    database,
+    'INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) ' +
+      "VALUES('local-critic-run-audit','workspace_primary','user','owner','owner','https://access.example.test','owner-subject','intelligence.run_completed','intelligence_run','local-critic-run','success','local-critic-run-request','test','{}','t','t');" +
+      "UPDATE intelligence_runs SET status='SUCCEEDED',terminal_audit_event_id='local-critic-run-audit',version=2 WHERE id='local-critic-run'",
+  );
+  const command = {
+    successorBudgetId: budgetId,
+    expectedBudgetVersion: 1,
+    expectedBudgetStatus: 'ACTIVE' as const,
+    predecessorCapacityEnvelopeId: first.envelope.id,
+    rejectedCritiqueVersionId: 'local-critique-v2',
+    reason: 'LANGUAGE_CONTRACT_FAILURE' as const,
+  };
+  if (scenario === 'multi') {
+    await seedSecondChainedProject(database);
+    const secondCommand = {
+      successorBudgetId: 'local-budget-b',
+      expectedBudgetVersion: 1,
+      expectedBudgetStatus: 'ACTIVE' as const,
+      predecessorCapacityEnvelopeId: 'local-prior-b',
+      rejectedCritiqueVersionId: 'local-critique-v2-b',
+      reason: 'LANGUAGE_CONTRACT_FAILURE' as const,
+    };
+    const instrumentedA = new InstrumentedD1(database);
+    const instrumentedB = new InstrumentedD1(database);
+    const serviceA = new ChainedScriptCriticCapacityService(
+      instrumentedA as unknown as D1Database,
+      owner,
+      context,
+    );
+    const serviceB = new ChainedScriptCriticCapacityService(
+      instrumentedB as unknown as D1Database,
+      owner,
+      context,
+    );
+    const outcomes = await Promise.allSettled([
+      serviceA.provision(projectId, 'local-chain-multi', command),
+      serviceB.provision('local-project-b', 'local-chain-multi', secondCommand),
+    ]);
+    const rows = await database
+      .prepare(
+        'SELECT project_id projectId,project_execution_budget_id budgetId,count(*) activeCount ' +
+          "FROM editorial_execution_envelopes WHERE status='ACTIVE' AND stage_key='SCRIPT_CRITIC' " +
+          'AND project_execution_budget_id IN (?,?) GROUP BY project_id,project_execution_budget_id ORDER BY project_id',
+      )
+      .bind(budgetId, 'local-budget-b')
+      .all<JsonRow>();
+    const foreignKeys = await database.prepare('PRAGMA foreign_key_check').all<JsonRow>();
+    return {
+      outcomes: outcomes.map((outcome) =>
+        outcome.status === 'fulfilled'
+          ? { kind: 'result', result: outcome.value }
+          : {
+              kind: 'error',
+              message:
+                outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+            },
+      ),
+      rows: rows.results,
+      foreignKeys: foreignKeys.results,
+      sqlBytes: [...instrumentedA.batchSqlBytes, ...instrumentedB.batchSqlBytes],
+      bindingCounts: [...instrumentedA.batchBindings, ...instrumentedB.batchBindings],
+      queryCount: instrumentedA.queryCount + instrumentedB.queryCount,
+    };
+  }
+  const instrumented = new InstrumentedD1(database);
+  const service = new ChainedScriptCriticCapacityService(
+    instrumented as unknown as D1Database,
+    owner,
+    context,
+  );
+  const outcomes = await Promise.allSettled([
+    service.provision(
+      projectId,
+      scenario === 'different' ? 'local-chain-a' : 'local-chain',
+      command,
+    ),
+    service.provision(
+      projectId,
+      scenario === 'different' ? 'local-chain-b' : 'local-chain',
+      command,
+    ),
+  ]);
+  const result = await database
+    .prepare(
+      "SELECT (SELECT count(*) FROM editorial_execution_envelopes WHERE project_execution_budget_id=? AND stage_key='SCRIPT_CRITIC' AND status='ACTIVE') activeCount," +
+        "(SELECT count(*) FROM audit_events WHERE action='editorial.script_critic_capacity_provisioned' AND workspace_id='workspace_primary') auditCount",
+    )
+    .bind(budgetId)
+    .first<JsonRow>();
+  const foreignKeys = await database.prepare('PRAGMA foreign_key_check').all<JsonRow>();
+  return {
+    outcomes: outcomes.map((outcome) =>
+      outcome.status === 'fulfilled'
+        ? { kind: 'result', result: outcome.value }
+        : {
+            kind: 'error',
+            message:
+              outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+          },
+    ),
+    activeCount: Number(result?.activeCount),
+    auditCount: Number(result?.auditCount),
+    foreignKeys: foreignKeys.results,
+    sqlBytes: instrumented.batchSqlBytes,
+    bindingCounts: instrumented.batchBindings,
+    queryCount: instrumented.queryCount,
+  };
+}
+
+async function seedSecondChainedProject(database: D1Database) {
+  await executeSql(
+    database,
+    'INSERT INTO projects(id,workspace_id,content_brand_id,channel_profile_id,title,format,operating_mode,status,primary_language,readiness_status,created_at,updated_at,created_by) ' +
+      "VALUES('local-project-b','workspace_primary','brand','channel','Project B','SHORT','ASSISTED','ANALYZING','es','ready','t','t','owner');" +
+      'INSERT INTO editorial_project_execution_budgets(id,workspace_id,project_id,profile_key,profile_version,currency,monetary_ceiling_microusd,status,authorized_by,created_at,updated_at,version) ' +
+      "VALUES('local-budget-b','workspace_primary','local-project-b','phase3_terminal_graph_v1',1,'USD',500000,'ACTIVE','owner','t','t',1);" +
+      'INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,current_version_id,status,created_at,updated_at,version,created_by,updated_by) ' +
+      "VALUES('local-script-b','workspace_primary','local-project-b','PRODUCTION_SCRIPT','local-script-v3-b','approved','t','t',3,'owner','owner');" +
+      'INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_text,source_type,content_hash,created_at,created_by) ' +
+      "VALUES('local-script-v3-b','workspace_primary','local-script-b',3,'es','Guion breve.','HUMAN_EDITED','" +
+      'c'.repeat(64) +
+      "','t','owner');" +
+      'INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at) ' +
+      "VALUES('local-script-approval-b','workspace_primary','local-script-v3-b','APPROVED','owner','owner','t');" +
+      'INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,current_version_id,status,created_at,updated_at,version,created_by,updated_by) ' +
+      "VALUES('local-critique-b','workspace_primary','local-project-b','SCRIPT_CRITIQUE','local-critique-v2-b','active','t','t',2,'owner','owner');" +
+      'INSERT INTO intelligence_runs(id,workspace_id,project_id,task_type,provider_id,provider_model_id,input_artifact_version_id,output_artifact_version_id,initiated_by,operating_mode,status,idempotency_key,creative_regeneration_number,safe_metadata_json,created_at,updated_at,version) ' +
+      "VALUES('local-critic-run-b','workspace_primary','local-project-b','SCRIPT_CRITIC','provider_openai','model_openai_gpt_5_6_sol_20260903','local-script-v3-b','local-critique-v2-b','owner','ASSISTED','QUEUED','local-critic-key-b',0,'{}','t','t',1)",
+  );
+  const critique = {
+    sourceScriptVersionId: 'local-script-v3-b',
+    languageCode: 'es',
+    strengths: ['The script has a clear narrative for the audience and follows its evidence.'],
+    issues: [],
+    dimensionsEvaluated: [
+      'FACTUAL_CONSISTENCY',
+      'BRIEF_ALIGNMENT',
+      'RESEARCH_ALIGNMENT',
+      'CLARITY',
+      'HOOK',
+      'PACING',
+      'REDUNDANCY',
+      'CTA',
+      'TECHNICAL_ACCURACY',
+      'SHORT_FORMAT_SUITABILITY',
+      'LANGUAGE_AND_EDITORIAL_CONSTRAINTS',
+    ],
+  };
+  await database
+    .prepare(
+      'INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_json,source_type,intelligence_run_id,content_hash,source_script_version_id,created_at,created_by) ' +
+        "VALUES('local-critique-v2-b','workspace_primary','local-critique-b',2,'es',?,'AI_GENERATED','local-critic-run-b',?,NULL,'t','owner')",
+    )
+    .bind(JSON.stringify(critique), 'd'.repeat(64))
+    .run();
+  await executeSql(
+    database,
+    'INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version) ' +
+      "VALUES('local-critique-dependency-b','workspace_primary','local-script-v3-b','local-critique-v2-b','EVALUATES_SOURCE','CURRENT','t','t',1);" +
+      'INSERT INTO intelligence_run_attempts(id,intelligence_run_id,attempt_number,attempt_kind,status,safe_metadata_json,started_at,completed_at) ' +
+      "VALUES('local-critic-attempt-b','local-critic-run-b',1,'TECHNICAL','SUCCEEDED','{}','t','t');" +
+      'INSERT INTO editorial_execution_envelopes(id,workspace_id,project_id,profile_key,profile_version,provider_id,provider_model_id,currency,monetary_ceiling_microusd,maximum_calls,status,authorized_by,created_at,updated_at,version,project_execution_budget_id,stage_key) ' +
+      "VALUES('local-prior-b','workspace_primary','local-project-b','phase3_terminal_graph_v1',1,'provider_openai','model_openai_gpt_5_6_sol_20260903','USD',403840,1,'ACTIVE','owner','t','t',1,'local-budget-b','SCRIPT_CRITIC');" +
+      'INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) ' +
+      "VALUES('local-prior-audit-b','workspace_primary','user','owner','owner','https://access.example.test','owner-subject','editorial.script_critic_capacity_provisioned','editorial_execution_envelope','local-prior-b','success','local-prior-request-b','test','{\"newEnvelopeId\":\"local-prior-b\"}','t','t');" +
+      'INSERT INTO editorial_execution_reservations(id,envelope_id,workspace_id,project_id,intelligence_run_id,step_key,pricing_snapshot_id,reserved_microusd,actual_microusd,status,created_at,project_execution_budget_id) ' +
+      "VALUES('local-critic-reservation-b','local-prior-b','workspace_primary','local-project-b','local-critic-run-b','SCRIPT_CRITIC','pricing_model_openai_gpt_5_6_sol_20260903',403840,53004,'RECONCILED','t','local-budget-b');" +
+      "UPDATE editorial_execution_envelopes SET status='CONSUMED',version=2 WHERE id='local-prior-b';" +
+      'INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,access_issuer,access_subject,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) ' +
+      "VALUES('local-critic-run-audit-b','workspace_primary','user','owner','owner','https://access.example.test','owner-subject','intelligence.run_completed','intelligence_run','local-critic-run-b','success','local-critic-run-request-b','test','{}','t','t');" +
+      "UPDATE intelligence_runs SET status='SUCCEEDED',terminal_audit_event_id='local-critic-run-audit-b',version=2 WHERE id='local-critic-run-b'",
+  );
+}
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
     if (url.pathname === '/health') return Response.json({ ok: true });
+    if (request.method === 'POST' && url.pathname.startsWith('/chained/')) {
+      try {
+        return Response.json(
+          await chainedLocalScenario(env.DB, url.pathname.slice('/chained/'.length)),
+        );
+      } catch (error) {
+        return Response.json(
+          { fatal: error instanceof Error ? error.message : String(error) },
+          { status: 500 },
+        );
+      }
+    }
     if (request.method === 'POST' && url.pathname.startsWith('/scenario/')) {
       const scenario = url.pathname.slice('/scenario/'.length) as Scenario;
       try {
@@ -632,6 +932,8 @@ export default {
           scenario === 'cross-project-same-key'
         )
           await seedSecondProject(env.DB);
+        if (httpRoute && routeScenario === 'workspace-scope')
+          await seedForeignWorkspaceProject(env.DB);
         if (httpRoute)
           routeApp =
             routeScenario === 'default'

@@ -664,6 +664,17 @@ export const scriptCriticCapacitySchema = z
   })
   .strict();
 export type ScriptCriticCapacityCommand = z.infer<typeof scriptCriticCapacitySchema>;
+export const chainedScriptCriticCapacitySchema = z
+  .object({
+    successorBudgetId: id,
+    expectedBudgetVersion: z.number().int().positive(),
+    expectedBudgetStatus: z.literal('ACTIVE'),
+    predecessorCapacityEnvelopeId: id,
+    rejectedCritiqueVersionId: id,
+    reason: z.literal('LANGUAGE_CONTRACT_FAILURE'),
+  })
+  .strict();
+export type ChainedScriptCriticCapacityCommand = z.infer<typeof chainedScriptCriticCapacitySchema>;
 export const governedRemediationCapacitySchema = z
   .object({
     workspaceId: id,

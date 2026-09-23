@@ -28,6 +28,7 @@ import {
   governedTerminalBudgetSchema,
   projectExecutionBudgetRolloverSchema,
   scriptCriticCapacitySchema,
+  chainedScriptCriticCapacitySchema,
   governedChainedRemediationCapacitySchema,
   governedRemediationCapacitySchema,
   governedImportedResearchRevisionSchema,
@@ -52,6 +53,7 @@ import { authorizePhase3Envelope } from './budget';
 import { authorizeGovernedTerminalBudget } from './governed-budget';
 import { ProjectBudgetRolloverError, ProjectBudgetRolloverService } from './budget-rollover';
 import { ScriptCriticCapacityError, ScriptCriticCapacityService } from './script-critic-capacity';
+import { ChainedScriptCriticCapacityService } from './script-critic-chained-capacity';
 import { GovernedRemediationService } from './governed-remediation';
 import { GovernedChainedRemediationService } from './governed-chained-remediation';
 import {
@@ -597,9 +599,11 @@ editorialRoutes.post(
   '/admin/projects/:projectId/editorial-script-critic-capacities',
   requirePermission('providers:admin'),
   async (c) => {
-    const parsed = scriptCriticCapacitySchema.safeParse(await c.req.json().catch(() => null));
+    const body: unknown = await c.req.json().catch(() => null);
+    const parsed = chainedScriptCriticCapacitySchema.safeParse(body);
+    const historical = scriptCriticCapacitySchema.safeParse(body);
     const key = c.req.header('Idempotency-Key')?.trim();
-    if (!parsed.success || !key || key.length > 200)
+    if ((!parsed.success && !historical.success) || !key || key.length > 200)
       return problem(
         c,
         422,
@@ -618,7 +622,17 @@ editorialRoutes.post(
       const service = serviceFactory
         ? serviceFactory(c.env.DB, c.get('user'), auditContext)
         : new ScriptCriticCapacityService(c.env.DB, c.get('user'), auditContext);
-      const result = await service.provision(c.req.param('projectId'), key, parsed.data);
+      const result = parsed.success
+        ? await new ChainedScriptCriticCapacityService(
+            c.env.DB,
+            c.get('user'),
+            auditContext,
+          ).provision(c.req.param('projectId'), key, parsed.data)
+        : historical.success
+          ? await service.provision(c.req.param('projectId'), key, historical.data)
+          : null;
+      if (!result)
+        throw new ScriptCriticCapacityError(422, 'script_critic_capacity_command_invalid');
       return c.json(result, result.idempotentReplay ? 200 : 201);
     } catch (error) {
       if (error instanceof ScriptCriticCapacityError)

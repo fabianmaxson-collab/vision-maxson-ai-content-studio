@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import {
+  appendFileSync,
   closeSync,
   copyFileSync,
   cpSync,
@@ -55,6 +56,59 @@ const sourceMigrations = join(root, 'packages', 'db', 'migrations');
 let temporaryRoot = '';
 let basePersistence = '';
 let configPath = '';
+const tracePath = process.env.VISION_ROLLOVER_D1_TRACE_PATH;
+
+function trace(label: string, startedAt: number, detail = '') {
+  if (tracePath)
+    appendFileSync(
+      tracePath,
+      `[rollover-d1] ${label} ${Date.now() - startedAt}ms${detail ? ` ${detail}` : ''}\n`,
+    );
+}
+
+async function applyLocalMigrations() {
+  const startedAt = Date.now();
+  const child = spawn(
+    process.execPath,
+    [
+      wrangler,
+      'd1',
+      'migrations',
+      'apply',
+      'vision-maxson-rollover-d1-regression',
+      '--local',
+      '--persist-to',
+      basePersistence,
+      '--config',
+      configPath,
+    ],
+    { cwd: root, env: wranglerEnvironment(), stdio: 'pipe' },
+  );
+  let output = '';
+  let processError: Error | null = null;
+  child.once('error', (error) => (processError = error));
+  child.stdout.on('data', (chunk) => (output += String(chunk)));
+  child.stderr.on('data', (chunk) => (output += String(chunk)));
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolveClose) => child.once('close', (code, signal) => resolveClose({ code, signal })),
+  );
+  const closedVoid = closed.then(() => undefined);
+  trace('migration-spawn', startedAt, `pid=${child.pid ?? 'unknown'}`);
+  if (!(await waitForClose(closedVoid, 90_000))) {
+    await stopWorker(child, closedVoid);
+    throw new Error(`D1 local migration replay exceeded 90000ms\n${output}`);
+  }
+  const result = await closed;
+  trace(
+    'migration-close',
+    startedAt,
+    `pid=${child.pid ?? 'unknown'} exit=${result.code} signal=${result.signal}`,
+  );
+  if (processError || result.code !== 0)
+    throw new Error(
+      `D1 local migration replay failed (exit=${result.code}, signal=${result.signal})\n${String(processError ?? '')}\n${output}`,
+    );
+}
 
 function normalizePath(path: string) {
   return path.replaceAll('\\', '/');
@@ -91,8 +145,10 @@ async function waitForServer(
   child: ChildProcessWithoutNullStreams,
   logs: () => string,
   spawnError: () => Error | null,
+  onListening: () => void,
 ) {
   const deadline = Date.now() + 30_000;
+  let listening = false;
   while (Date.now() < deadline) {
     const error = spawnError();
     if (error) throw new Error(`Wrangler process crashed: ${error.message}\n${logs()}`);
@@ -101,10 +157,19 @@ async function waitForServer(
         `Wrangler process crashed (exit=${child.exitCode}, signal=${child.signalCode})\n${logs()}`,
       );
     try {
-      const response = await fetch(`${origin}/health`);
-      if (response.ok) return;
+      if (!listening) {
+        const response = await fetch(`${origin}/listening`, { signal: AbortSignal.timeout(1_000) });
+        if (response.ok) {
+          listening = true;
+          onListening();
+        }
+      }
+      if (listening) {
+        const response = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1_000) });
+        if (response.ok) return;
+      }
     } catch {
-      // The local Worker is still starting.
+      // The local Worker or its D1 binding is still starting.
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
@@ -134,9 +199,12 @@ async function stopWorker(child: ChildProcessWithoutNullStreams, closed: Promise
 }
 
 async function runScenario(scenario: string): Promise<ScenarioResult> {
+  const startedAt = Date.now();
   const persistence = join(temporaryRoot, `scenario-${scenario}`);
   cpSync(basePersistence, persistence, { recursive: true });
+  trace('scenario-persistence', startedAt, `scenario=${scenario}`);
   const port = await availablePort();
+  trace('scenario-port', startedAt, `scenario=${scenario} port=${port}`);
   const child = spawn(
     process.execPath,
     [
@@ -163,14 +231,18 @@ async function runScenario(scenario: string): Promise<ScenarioResult> {
   child.stdout.on('data', (chunk) => (output += String(chunk)));
   child.stderr.on('data', (chunk) => (output += String(chunk)));
   const origin = `http://127.0.0.1:${port}`;
+  trace('scenario-spawn', startedAt, `scenario=${scenario} pid=${child.pid ?? 'unknown'}`);
   try {
     await waitForServer(
       origin,
       child,
       () => output,
       () => processError,
+      () => trace('scenario-worker-listening', startedAt, `scenario=${scenario}`),
     );
+    trace('scenario-d1-http-ready', startedAt, `scenario=${scenario}`);
     const response = await fetch(`${origin}/scenario/${scenario}`, { method: 'POST' });
+    trace('scenario-response', startedAt, `scenario=${scenario} status=${response.status}`);
     const body: ScenarioResult & { fatal?: string } = await response.json();
     if (!response.ok || body.fatal)
       throw new Error(
@@ -179,6 +251,7 @@ async function runScenario(scenario: string): Promise<ScenarioResult> {
     return body;
   } finally {
     await stopWorker(child, closed);
+    trace('scenario-close', startedAt, `scenario=${scenario} pid=${child.pid ?? 'unknown'}`);
   }
 }
 
@@ -192,8 +265,10 @@ function deterministicReceiptId(key: string) {
   return `audit_${createHash('sha256').update(payload).digest('hex')}`;
 }
 
-beforeAll(() => {
+beforeAll(async () => {
+  const startedAt = Date.now();
   temporaryRoot = mkdtempSync(join(tmpdir(), 'vision-maxson-rollover-d1-'));
+  trace('temp-root', startedAt, `path=${temporaryRoot}`);
   basePersistence = join(temporaryRoot, 'base-persistence');
   const migrations = join(temporaryRoot, 'migrations');
   mkdirSync(migrations, { recursive: true });
@@ -211,6 +286,7 @@ beforeAll(() => {
     }
     copyFileSync(join(sourceMigrations, name), target);
   }
+  trace('migration-files', startedAt, `count=${allowed.length}`);
 
   configPath = join(temporaryRoot, 'wrangler.rollover-d1.jsonc');
   writeFileSync(
@@ -235,33 +311,20 @@ beforeAll(() => {
     ),
   );
 
-  const migration = spawnSync(
-    process.execPath,
-    [
-      wrangler,
-      'd1',
-      'migrations',
-      'apply',
-      'vision-maxson-rollover-d1-regression',
-      '--local',
-      '--persist-to',
-      basePersistence,
-      '--config',
-      configPath,
-    ],
-    { cwd: root, env: wranglerEnvironment(), encoding: 'utf8' },
-  );
-  if (migration.status !== 0)
-    throw new Error(`D1 local migration replay failed\n${migration.stdout}\n${migration.stderr}`);
+  trace('config-written', startedAt);
+  await applyLocalMigrations();
+  trace('before-all-complete', startedAt);
 }, 120_000);
 
 afterAll(async () => {
+  const startedAt = Date.now();
   const expectedPrefix = join(tmpdir(), 'vision-maxson-rollover-d1-');
   if (!temporaryRoot.startsWith(expectedPrefix)) throw new Error('unsafe D1 test cleanup path');
   let lastError: unknown;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      trace('cleanup-complete', startedAt, `attempt=${attempt + 1}`);
       return;
     } catch (error) {
       lastError = error;

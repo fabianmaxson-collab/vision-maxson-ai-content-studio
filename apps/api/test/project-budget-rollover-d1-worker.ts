@@ -294,7 +294,11 @@ async function execute(database: D1Database, scenario: string) {
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
-    if (url.pathname === '/health') return Response.json({ ok: true });
+    if (url.pathname === '/listening') return Response.json({ ok: true });
+    if (url.pathname === '/health') {
+      await env.DB.prepare('SELECT 1').first();
+      return Response.json({ ok: true });
+    }
     if (request.method !== 'POST' || !url.pathname.startsWith('/scenario/'))
       return new Response('not found', { status: 404 });
     const scenario = url.pathname.slice('/scenario/'.length);
