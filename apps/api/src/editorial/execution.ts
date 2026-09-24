@@ -29,6 +29,7 @@ import {
   scriptCritiqueSchema,
   storyboardOutputSchema,
   storyboardOutputV1Schema,
+  createStoryboardOutputV2Schema,
   storyboardOutputV2Schema,
   intelligenceTaskSchema,
 } from '@vision-maxson/contracts';
@@ -478,6 +479,27 @@ export function validateStoryboardAuthoritativeFormat(
       false,
       'Storyboard format or aspect ratio does not match the authoritative project.',
     );
+}
+
+export function storyboardSegmentReferenceInstructions(snapshot: StoryboardSegmentSnapshot) {
+  const mapping = snapshot.segments
+    .map(
+      (segment) =>
+        `segment order ${segment.order} -> exact ID: "${segment.id}" -> context: ${JSON.stringify(segment.text.slice(0, 100))}`,
+    )
+    .join('\n');
+  return `AUTHORITATIVE SCRIPT SEGMENT REGISTRY (EXACT AND COMPLETE):
+Every scriptSegmentIds array MUST be copied verbatim from the authoritative segment registry below.
+- scriptSegmentIds MUST be copied verbatim from the supplied authoritative segment registry;
+- never invent an ID;
+- never use order numbers as IDs;
+- never shorten IDs;
+- never use IDs from examples/history;
+- every referenced ID must exactly match one listed ID;
+- use only the supplied current Script snapshot.
+
+Compact mapping (segment order -> exact ID -> text/context):
+${mapping}`;
 }
 
 export const scriptCritiquePolicyInstructions = `Evaluate every required dimension supplied in requiredDimensions exactly once in dimensionsEvaluated.
@@ -1328,6 +1350,21 @@ export class EditorialExecutionService {
             project.storyboardSourceSegments as unknown as StoryboardSourceSegment[],
           )))
         : null;
+    if (task === 'STORYBOARD_PLANNER') {
+      if (!storyboardSegmentSnapshot || storyboardSegmentSnapshot.count === 0)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Storyboard requires persisted source segments.',
+        );
+      const segmentIds = storyboardSegmentSnapshot.segments.map((segment) => segment.id);
+      if (new Set(segmentIds).size !== segmentIds.length)
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Storyboard source Script segments contain duplicate IDs.',
+        );
+    }
     if (storyboardSegmentSnapshot)
       project.storyboardSourceSegments = storyboardSegmentSnapshot.segments.map((segment) => ({
         id: segment.id,
@@ -1438,7 +1475,11 @@ export class EditorialExecutionService {
       task !== 'STORYBOARD_PLANNER'
         ? outputSchema[task]
         : prompt.outputSchemaVersion === 'storyboard-output-v2'
-          ? storyboardOutputV2Schema
+          ? storyboardSegmentSnapshot
+            ? createStoryboardOutputV2Schema(
+                storyboardSegmentSnapshot.segments.map((segment) => segment.id),
+              )
+            : storyboardOutputV2Schema
           : prompt.outputSchemaVersion === 'storyboard-output-v1'
             ? storyboardOutputV1Schema
             : null;
@@ -1574,7 +1615,7 @@ export class EditorialExecutionService {
         : task === 'SCRIPT_CRITIC'
           ? `${prompt.templateText}\n\n${scriptCritiquePolicyInstructions}\n\n${scriptCritiqueLanguageInstructions(critiqueSource!.script.languageCode)}`
           : task === 'STORYBOARD_PLANNER'
-            ? `${prompt.templateText}\n\n${storyboardLanguageInstructions(storyboardReplacementSnapshot?.scriptLanguage ?? String(project.primaryLanguage))}\n\n${storyboardFormatInstructions(storyboardAuthoritativeFormat!)}`
+            ? `${prompt.templateText}\n\n${storyboardLanguageInstructions(storyboardReplacementSnapshot?.scriptLanguage ?? String(project.primaryLanguage))}\n\n${storyboardFormatInstructions(storyboardAuthoritativeFormat!)}\n\n${storyboardSegmentReferenceInstructions(storyboardSegmentSnapshot!)}`
             : prompt.templateText;
     const providerMaterial = providerBoundRequestMaterial(
       effectivePromptTemplate,
@@ -2803,6 +2844,15 @@ export class EditorialExecutionService {
           'PERMANENT',
           false,
           'Storyboard requires persisted source segments.',
+        );
+      if (
+        new Set(storyboardSourceSegments.map((segment) => segment.id)).size !==
+        storyboardSourceSegments.length
+      )
+        throw new ProviderError(
+          'PERMANENT',
+          false,
+          'Storyboard source Script segments contain duplicate IDs.',
         );
       const critique = await this.db
         .prepare(

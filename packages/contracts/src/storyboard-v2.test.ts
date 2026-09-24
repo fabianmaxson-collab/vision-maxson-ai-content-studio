@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { storyboardOutputV1Schema, storyboardOutputV2Schema } from './editorial';
+import { z } from 'zod';
+import {
+  createStoryboardOutputV2Schema,
+  storyboardOutputV1Schema,
+  storyboardOutputV2Schema,
+} from './editorial';
 const scene = {
   order: 1,
   targetDurationSeconds: 5,
@@ -161,5 +166,85 @@ describe('Storyboard contracts', () => {
         scenes: [{ ...scene, extra: true }],
       }).success,
     ).toBe(false);
+  });
+  describe('Dynamic segment enum schema (C86)', () => {
+    const validIds = ['segment_1', 'segment_2', 'segment_3'] as const;
+    const dynamicSchema = createStoryboardOutputV2Schema(validIds);
+
+    it('generates provider-facing JSON schema with exact segment enum', () => {
+      const jsonSchema = z.toJSONSchema(dynamicSchema);
+      expect(jsonSchema).toMatchObject({
+        properties: {
+          scenes: {
+            items: {
+              properties: {
+                scriptSegmentIds: {
+                  items: {
+                    type: 'string',
+                    enum: ['segment_1', 'segment_2', 'segment_3'],
+                  },
+                },
+                captions: {
+                  properties: {
+                    sourceScriptSegmentIds: {
+                      items: {
+                        type: 'string',
+                        enum: ['segment_1', 'segment_2', 'segment_3'],
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+    });
+
+    it('accepts output referencing exact valid segment IDs', () => {
+      expect(
+        dynamicSchema.safeParse({
+          contractVersion: 'storyboard-output-v2',
+          projectFormat: 'SHORT',
+          aspectRatio: '9:16',
+          scenes: [
+            {
+              ...scene,
+              scriptSegmentIds: ['segment_1', 'segment_2'],
+              captions: { ...scene.captions, sourceScriptSegmentIds: ['segment_1'] },
+            },
+          ],
+        }).success,
+      ).toBe(true);
+    });
+
+    it('rejects output referencing fake/unknown segment ID at schema boundary', () => {
+      expect(
+        dynamicSchema.safeParse({
+          contractVersion: 'storyboard-output-v2',
+          projectFormat: 'SHORT',
+          aspectRatio: '9:16',
+          scenes: [
+            {
+              ...scene,
+              scriptSegmentIds: ['script_segment_fake'],
+              captions: { ...scene.captions, sourceScriptSegmentIds: ['script_segment_fake'] },
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    });
+
+    it('rejects empty segment registry at pre-dispatch construction', () => {
+      expect(() => createStoryboardOutputV2Schema([])).toThrow(
+        'Storyboard source Script segments cannot be empty.',
+      );
+    });
+
+    it('rejects duplicate segment IDs at pre-dispatch construction', () => {
+      expect(() => createStoryboardOutputV2Schema(['segment_1', 'segment_2', 'segment_1'])).toThrow(
+        'Storyboard source Script segments cannot contain duplicate IDs.',
+      );
+    });
   });
 });
