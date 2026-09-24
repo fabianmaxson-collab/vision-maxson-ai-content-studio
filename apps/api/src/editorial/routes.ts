@@ -26,6 +26,7 @@ import {
   approvalSchema,
   createArtifactVersionSchema,
   governedTerminalBudgetSchema,
+  governedStageCapacitySchema,
   projectExecutionBudgetRolloverSchema,
   scriptCriticCapacitySchema,
   chainedScriptCriticCapacitySchema,
@@ -51,6 +52,10 @@ import { ScriptCritiqueLanguageCapabilityError } from './critique-language';
 import { DeterministicPreflightService } from './preflight';
 import { authorizePhase3Envelope } from './budget';
 import { authorizeGovernedTerminalBudget } from './governed-budget';
+import {
+  GovernedStageCapacityError,
+  GovernedStageCapacityService,
+} from './governed-stage-capacity';
 import { ProjectBudgetRolloverError, ProjectBudgetRolloverService } from './budget-rollover';
 import { ScriptCriticCapacityError, ScriptCriticCapacityService } from './script-critic-capacity';
 import { ChainedScriptCriticCapacityService } from './script-critic-chained-capacity';
@@ -543,6 +548,53 @@ editorialRoutes.post(
         'Validation Failed',
         error instanceof Error ? error.message : 'governed_terminal_budget_authorization_failed',
       );
+    }
+  },
+);
+editorialRoutes.post(
+  '/admin/projects/:projectId/editorial-stage-capacities',
+  requirePermission('providers:admin'),
+  async (c) => {
+    const parsed = governedStageCapacitySchema.safeParse(await c.req.json().catch(() => null));
+    const key = c.req.header('Idempotency-Key')?.trim();
+    if (!parsed.success || !key || key.length > 200)
+      return problem(
+        c,
+        422,
+        'Validation Failed',
+        'A valid stage capacity command and Idempotency-Key are required.',
+      );
+    try {
+      const identity = c.get('identity');
+      const result = await new GovernedStageCapacityService(c.env.DB, c.get('user'), {
+        requestId: c.get('requestId'),
+        environment: c.env.ENVIRONMENT,
+        accessIssuer: identity.issuer,
+        accessSubject: identity.subject,
+      }).provision(c.req.param('projectId'), key, parsed.data);
+      return c.json(result, result.idempotentReplay ? 200 : 201);
+    } catch (error) {
+      if (error instanceof GovernedStageCapacityError)
+        return problem(
+          c,
+          error.status,
+          error.status === 403
+            ? 'Forbidden'
+            : error.status === 404
+              ? 'Not Found'
+              : error.status === 409
+                ? 'Conflict'
+                : 'Validation Failed',
+          error.message,
+        );
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'stage_capacity_provision_failed',
+          requestId: c.get('requestId'),
+        }),
+      );
+      return problem(c, 500, 'Internal Server Error', 'The request could not be completed.');
     }
   },
 );
