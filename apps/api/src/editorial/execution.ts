@@ -424,9 +424,13 @@ export function storyboardProviderContext(
     approvedBrief: source('CONTENT_BRIEF', snapshot?.briefVersionId),
     sourceScript: source('PRODUCTION_SCRIPT', snapshot?.scriptVersionId),
     approvedCritique: source('SCRIPT_CRITIQUE', snapshot?.critiqueVersionId),
-    sourceScriptSegments: snapshot
+    sourceScriptSegments: (snapshot
       ? snapshot.scriptSegmentSnapshot.segments
-      : project.storyboardSourceSegments,
+      : (project.storyboardSourceSegments as StoryboardSourceSegment[])
+    ).map((segment) => ({
+      id: segment.id,
+      order: segment.order,
+    })),
     humanCritiqueApproval: snapshot
       ? {
           approvalId: snapshot.critiqueApprovalId,
@@ -483,14 +487,11 @@ export function validateStoryboardAuthoritativeFormat(
 
 export function storyboardSegmentReferenceInstructions(snapshot: StoryboardSegmentSnapshot) {
   const mapping = snapshot.segments
-    .map(
-      (segment) =>
-        `segment order ${segment.order} -> exact ID: "${segment.id}" -> context: ${JSON.stringify(segment.text.slice(0, 100))}`,
-    )
+    .map((segment) => `Segment ${segment.order} -> "${segment.id}"`)
     .join('\n');
   return `AUTHORITATIVE SCRIPT SEGMENT REGISTRY (EXACT AND COMPLETE):
-Every scriptSegmentIds array MUST be copied verbatim from the authoritative segment registry below.
-- scriptSegmentIds MUST be copied verbatim from the supplied authoritative segment registry;
+Every scriptSegmentIds and caption reference MUST be copied verbatim from this registry:
+- scriptSegmentIds MUST be copied verbatim;
 - never invent an ID;
 - never use order numbers as IDs;
 - never shorten IDs;
@@ -498,7 +499,6 @@ Every scriptSegmentIds array MUST be copied verbatim from the authoritative segm
 - every referenced ID must exactly match one listed ID;
 - use only the supplied current Script snapshot.
 
-Compact mapping (segment order -> exact ID -> text/context):
 ${mapping}`;
 }
 

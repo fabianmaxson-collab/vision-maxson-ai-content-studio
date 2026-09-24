@@ -194,11 +194,16 @@ describe('canonical Storyboard provider context', () => {
       storyboardSourceSegments: [{ id: 'segment_7', order: 7, text: 'Changed after snapshot.' }],
     };
     const context = storyboardProviderContext(staleProject, snapshot, claims);
-    expect(context.sourceScriptSegments).toBe(snapshot.scriptSegmentSnapshot.segments);
-    expect(JSON.stringify(context.sourceScriptSegments)).toBe(
-      JSON.stringify(snapshot.scriptSegmentSnapshot.segments),
+    expect(context.sourceScriptSegments).toEqual(
+      snapshot.scriptSegmentSnapshot.segments.map((segment) => ({
+        id: segment.id,
+        order: segment.order,
+      })),
     );
+    expect(JSON.stringify(context.sourceScriptSegments)).not.toContain('text');
     expect(JSON.stringify(context)).not.toContain('Changed after snapshot.');
+    // Authoritative script content remains fully preserved in sourceScript
+    expect(context.sourceScript.content).toEqual({ segments: [{ id: 'segment_7' }] });
   });
 
   it('fails closed when the segment snapshot targets another Script version', () => {

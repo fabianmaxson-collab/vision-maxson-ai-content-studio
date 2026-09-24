@@ -237,10 +237,13 @@ describe('BLOCK 9FA-R7-D10-C86: Storyboard Provider Segment Hardening', () => {
     expect(instructions).toContain('every referenced ID must exactly match one listed ID');
     expect(instructions).toContain('use only the supplied current Script snapshot');
 
-    // Mapping check
-    expect(instructions).toContain('segment order 1 -> exact ID: "script_segment_alpha"');
-    expect(instructions).toContain('segment order 2 -> exact ID: "script_segment_beta"');
-    expect(instructions).toContain('segment order 3 -> exact ID: "script_segment_gamma"');
+    // Mapping check: concise Segment <order> -> "<id>" without duplicated segment text
+    expect(instructions).toContain('Segment 1 -> "script_segment_alpha"');
+    expect(instructions).toContain('Segment 2 -> "script_segment_beta"');
+    expect(instructions).toContain('Segment 3 -> "script_segment_gamma"');
+    expect(instructions).not.toContain('First segment intro.');
+    expect(instructions).not.toContain('Second segment anomaly.');
+    expect(instructions).not.toContain('Third segment resolution.');
   });
 
   it('8. Snapshot drift fails closed if database segments mutate post-dispatch', async () => {
