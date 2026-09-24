@@ -2,10 +2,23 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp, type Bindings } from '../src/app';
+import { OpenAIResponsesAdapter } from '@vision-maxson/providers/openai';
 import { revisionRequestSchema } from '@vision-maxson/contracts';
 import { EditorialExecutionService } from '../src/editorial/execution';
 import { DeterministicPreflightService } from '../src/editorial/preflight';
 import { evaluateEditorialProductionReadiness } from '../src/editorial/readiness';
+import {
+  createStoryboardSegmentSnapshot,
+  storyboardExecutionPolicyGuard,
+  storyboardProjectFormatGuard,
+  storyboardReplacementGuard,
+  storyboardSegmentGuard,
+} from '../src/editorial/storyboard-replacement';
+import {
+  loadStoryboardResearchClaimSnapshot,
+  storyboardResearchClaimGuard,
+  validateStoryboardFactualClaims,
+} from '../src/editorial/storyboard-research-claims';
 import { EditorialRepository, type EditorialActor } from '../src/editorial/repository';
 import { EditorialRevisionService } from '../src/editorial/revision';
 import { GovernedResearchRevisionService } from '../src/editorial/research-revision';
@@ -34,6 +47,9 @@ class Statement {
     private database: DatabaseSync,
     private sql: string,
   ) {}
+  get bindingCount() {
+    return this.values.length;
+  }
   bind(...values: SQLInputValue[]) {
     this.values = values;
     return this;
@@ -50,11 +66,20 @@ class Statement {
   }
 }
 class AtomicD1 {
+  queryCount = 0;
+  maxBatchStatements = 0;
+  maxBatchBindings = 0;
   constructor(readonly database: DatabaseSync) {}
   prepare(sql: string) {
+    this.queryCount += 1;
     return new Statement(this.database, sql);
   }
   async batch(statements: Statement[]) {
+    this.maxBatchStatements = Math.max(this.maxBatchStatements, statements.length);
+    this.maxBatchBindings = Math.max(
+      this.maxBatchBindings,
+      ...statements.map((statement) => statement.bindingCount),
+    );
     this.database.exec('BEGIN IMMEDIATE');
     try {
       const results = [];
@@ -68,7 +93,12 @@ class AtomicD1 {
   }
 }
 const actor: EditorialActor = { id: 'owner', workspaceId: 'workspace', roles: ['owner'] };
-function fixture(evidence = true, includeRevisionSchema = true, schemaVersion = 13) {
+function fixture(
+  evidence = true,
+  includeRevisionSchema = true,
+  schemaVersion = 13,
+  storyboardSourceType: 'HUMAN_EDITED' | 'AI_GENERATED' = 'HUMAN_EDITED',
+) {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys=ON');
   migrations
@@ -89,13 +119,14 @@ function fixture(evidence = true, includeRevisionSchema = true, schemaVersion = 
       ('script','workspace','project','PRODUCTION_SCRIPT','script-v1','approved','t','t',2,'owner','owner'),
       ('critique','workspace','project','SCRIPT_CRITIQUE','critique-v1','approved','t','t',2,'owner','owner'),
       ('storyboard','workspace','project','STORYBOARD','storyboard-v1','active','t','t',2,'owner','owner');
-    INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_text,content_json,source_type,content_hash,created_at,created_by) VALUES
-      ('research-v1','workspace','research',1,'de','research',NULL,'HUMAN_EDITED','${'1'.repeat(64)}','t','owner'),
-      ('idea-v1','workspace','idea',1,'de','idea',NULL,'HUMAN_EDITED','${'0'.repeat(64)}','t','owner'),
-      ('brief-v1','workspace','brief',1,'de',NULL,'{"researchVersionIds":["research-v1"]}','HUMAN_EDITED','${'2'.repeat(64)}','t','owner'),
-      ('script-v1','workspace','script',1,'de','script',NULL,'HUMAN_EDITED','${'3'.repeat(64)}','t','owner'),
-      ('critique-v1','workspace','critique',1,'de','critique',NULL,'HUMAN_EDITED','${'4'.repeat(64)}','t','owner'),
-      ('storyboard-v1','workspace','storyboard',1,'de','storyboard',NULL,'HUMAN_EDITED','${'5'.repeat(64)}','t','owner');
+    INSERT INTO intelligence_runs(id,workspace_id,project_id,task_type,initiated_by,operating_mode,status,idempotency_key,creative_regeneration_number,safe_metadata_json,created_at,updated_at,version) VALUES('successful-storyboard-run','workspace','project','STORYBOARD_PLANNER','owner','ASSISTED','QUEUED','historical-key',0,'{}','t','t',1);
+    INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_text,content_json,source_type,content_hash,created_at,created_by,intelligence_run_id) VALUES
+      ('research-v1','workspace','research',1,'de','research',NULL,'HUMAN_EDITED','${'1'.repeat(64)}','t','owner',NULL),
+      ('idea-v1','workspace','idea',1,'de','idea',NULL,'HUMAN_EDITED','${'0'.repeat(64)}','t','owner',NULL),
+      ('brief-v1','workspace','brief',1,'de',NULL,'{"researchVersionIds":["research-v1"]}','HUMAN_EDITED','${'2'.repeat(64)}','t','owner',NULL),
+      ('script-v1','workspace','script',1,'de','script',NULL,'HUMAN_EDITED','${'3'.repeat(64)}','t','owner',NULL),
+      ('critique-v1','workspace','critique',1,'de','critique',NULL,'HUMAN_EDITED','${'4'.repeat(64)}','t','owner',NULL),
+      ('storyboard-v1','workspace','storyboard',1,'de','storyboard',NULL,'${storyboardSourceType}','${'5'.repeat(64)}','t','owner',${storyboardSourceType === 'AI_GENERATED' ? "'successful-storyboard-run'" : 'NULL'});
     INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at) VALUES
       ('approve-research','workspace','research-v1','APPROVED','owner','owner','t'),
       ('approve-idea','workspace','idea-v1','APPROVED','owner','owner','t'),
@@ -111,7 +142,7 @@ function fixture(evidence = true, includeRevisionSchema = true, schemaVersion = 
       ('dep-sb','workspace','script-v1','storyboard-v1','GENERATED_FROM','CURRENT','t','t',1),
       ('dep-cb','workspace','critique-v1','storyboard-v1','INFORMED_BY','CURRENT','t','t',1);
     INSERT INTO idea_candidates(id,workspace_id,project_id,artifact_id,artifact_version_id,title,target_format,status,evidence_class,created_at,updated_at,version,created_by,updated_by) VALUES('idea-candidate','workspace','project','idea','idea-v1','Idea','SHORT','SELECTED','UNKNOWN','t','t',1,'owner','owner');
-    INSERT INTO intelligence_runs(id,workspace_id,project_id,task_type,initiated_by,operating_mode,status,idempotency_key,creative_regeneration_number,safe_metadata_json,created_at,updated_at,version) VALUES('successful-storyboard-run','workspace','project','STORYBOARD_PLANNER','owner','ASSISTED','QUEUED','historical-key',0,'{}','t','t',1);
+
     INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at) VALUES('historical-terminal-audit','workspace','system',NULL,NULL,'intelligence.run_completed','intelligence_run','successful-storyboard-run','success','historical-request','test','{}','t','t');
     UPDATE intelligence_runs SET status='SUCCEEDED',terminal_audit_event_id='historical-terminal-audit',updated_at='t2',version=2 WHERE id='successful-storyboard-run';
   `);
@@ -1129,5 +1160,663 @@ describe('governed Research revision readiness integration', () => {
     ).rejects.toThrow('revision_request_not_found');
     expect(count(database, 'editorial_artifact_versions')).toBe(before);
     expect(count(database, 'editorial_research_revision_imports')).toBe(0);
+  });
+});
+
+async function storyboardReplacementFixture() {
+  const { database, d1 } = fixture(true, true, 13, 'AI_GENERATED');
+  const request = await service(d1).request('storyboard-v1', 'replacement-request', command);
+  database.exec(`
+
+    INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,parent_version_id,language_code,content_text,content_json,source_type,content_hash,created_at,created_by) VALUES
+      ('research-v2','workspace','research',2,'research-v1','de','research','{"summary":"Recherche"}','HUMAN_EDITED','${'6'.repeat(64)}','t2','owner'),
+      ('idea-v2','workspace','idea',2,'idea-v1','de','idea','{"title":"Idee"}','HUMAN_EDITED','${'7'.repeat(64)}','t2','owner'),
+      ('brief-v2','workspace','brief',2,'brief-v1','de',NULL,'{"researchVersionIds":["research-v2"]}','HUMAN_EDITED','${'8'.repeat(64)}','t2','owner'),
+      ('script-v2','workspace','script',2,'script-v1','de','script','{"segments":[]}','HUMAN_EDITED','${'9'.repeat(64)}','t2','owner'),
+      ('critique-v2','workspace','critique',2,'critique-v1','de',NULL,'{"issues":[]}','HUMAN_EDITED','${'a'.repeat(64)}','t2','owner');
+    INSERT INTO script_segments(id,workspace_id,script_version_id,segment_order,content_text,content_hash,word_count,created_at) VALUES
+      ('segment-v2','workspace','script-v2',1,'Die technische Entwicklung ist historisch belegt.','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',7,'t2'),
+      ('segment-v2-2','workspace','script-v2',2,'Ein zweiter belegter Satz.','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',4,'t2');
+    UPDATE editorial_artifacts SET current_version_id='research-v2',status='approved',version=3 WHERE id='research';
+    UPDATE editorial_artifacts SET current_version_id='idea-v2',status='approved',version=3 WHERE id='idea';
+    UPDATE editorial_artifacts SET current_version_id='brief-v2',status='approved',version=3 WHERE id='brief';
+    UPDATE editorial_artifacts SET current_version_id='script-v2',status='approved',version=3 WHERE id='script';
+    UPDATE editorial_artifacts SET current_version_id='critique-v2',status='approved',version=3 WHERE id='critique';
+    UPDATE idea_candidates SET status='REJECTED',version=2 WHERE id='idea-candidate';
+    INSERT INTO idea_candidates(id,workspace_id,project_id,artifact_id,artifact_version_id,title,target_format,status,evidence_class,created_at,updated_at,version,created_by,updated_by) VALUES('selected-v2','workspace','project','idea','idea-v2','Idea','SHORT','SELECTED','UNKNOWN','t2','t2',1,'owner','owner');
+    INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,comment,decided_at) VALUES
+      ('approve-research-v2','workspace','research-v2','APPROVED','owner','owner',NULL,'t2'),
+      ('approve-idea-v2','workspace','idea-v2','APPROVED','owner','owner',NULL,'t2'),
+      ('approve-brief-v2','workspace','brief-v2','APPROVED','owner','owner',NULL,'t2'),
+      ('approve-script-v2','workspace','script-v2','APPROVED','owner','owner',NULL,'t2'),
+      ('approve-critique-v2','workspace','critique-v2','APPROVED','owner','owner','Visuals belong in Storyboard; pacing LOW; retain segment 7 attribution.','t2');
+    INSERT INTO research_sources(id,workspace_id,research_version_id,source_type,title,source_reference,verification_status,created_at,created_by) VALUES('source-v2','workspace','research-v2','ARCHIVE','Source','ref','owner_approved','t2','owner');
+    INSERT INTO research_claims(id,workspace_id,research_version_id,source_id,claim_text,evidence_class,created_at,created_by) VALUES('claim-v2','workspace','research-v2','source-v2','Evidenced event','OBSERVED','t2','owner');
+    INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version) VALUES
+      ('dep-ri-v2','workspace','research-v2','idea-v2','GENERATED_FROM','CURRENT','t2','t2',1),
+      ('dep-ib-v2','workspace','idea-v2','brief-v2','GENERATED_FROM','CURRENT','t2','t2',1),
+      ('dep-rb-v2','workspace','research-v2','brief-v2','USES_RESEARCH','CURRENT','t2','t2',1),
+      ('dep-bs-v2','workspace','brief-v2','script-v2','GENERATED_FROM','CURRENT','t2','t2',1),
+      ('dep-sc-v2','workspace','script-v2','critique-v2','EVALUATES_SOURCE','CURRENT','t2','t2',1);
+    UPDATE artifact_dependencies SET validity_status='REAPPROVAL_REQUIRED',invalidated_at='t2',invalidated_by_version_id='script-v2',version=2 WHERE id='dep-sb';
+    UPDATE artifact_dependencies SET validity_status='REAPPROVAL_REQUIRED',invalidated_at='t2',invalidated_by_version_id='critique-v2',version=2 WHERE id='dep-cb';
+  `);
+  return { database, d1, requestId: String(request.id) };
+}
+
+describe('explicit Storyboard replacement readiness', () => {
+  it('breaks only the OPEN revision circular blocker and captures exact sources and human guidance', async () => {
+    const { database, d1, requestId } = await storyboardReplacementFixture();
+    const ordinary = await evaluateEditorialProductionReadiness(
+      d1,
+      actor,
+      'project',
+      'BEFORE_STORYBOARD',
+    );
+    expect(ordinary.ready).toBe(false);
+    expect(ordinary.blockers).toContain('OPEN_REVISION_REQUEST');
+    const replacement = await evaluateEditorialProductionReadiness(
+      d1,
+      actor,
+      'project',
+      'BEFORE_STORYBOARD',
+      {
+        inputArtifactVersionId: 'script-v2',
+        storyboardReplacementRevisionRequestId: requestId,
+      },
+    );
+    expect(replacement.ready).toBe(true);
+    expect(replacement.storyboardReplacementSnapshot).toMatchObject({
+      researchVersionId: 'research-v2',
+      briefVersionId: 'brief-v2',
+      scriptVersionId: 'script-v2',
+      critiqueVersionId: 'critique-v2',
+      storyboardVersionId: 'storyboard-v1',
+      authoritativeProjectFormat: 'SHORT',
+      critiqueApprovalId: 'approve-critique-v2',
+      critiqueApprovalComment:
+        'Visuals belong in Storyboard; pacing LOW; retain segment 7 attribution.',
+    });
+    expect(count(database, 'editorial_revision_request_resolutions')).toBe(0);
+  });
+
+  it('rejects wrong request, wrong workspace, resolved request and already replaced target', async () => {
+    const { database, d1, requestId } = await storyboardReplacementFixture();
+    const options = {
+      inputArtifactVersionId: 'script-v2',
+      storyboardReplacementRevisionRequestId: 'wrong',
+    };
+    expect(
+      (
+        await evaluateEditorialProductionReadiness(
+          d1,
+          actor,
+          'project',
+          'BEFORE_STORYBOARD',
+          options,
+        )
+      ).ready,
+    ).toBe(false);
+    await expect(
+      evaluateEditorialProductionReadiness(
+        d1,
+        { ...actor, workspaceId: 'other' },
+        'project',
+        'BEFORE_STORYBOARD',
+        { ...options, storyboardReplacementRevisionRequestId: requestId },
+      ),
+    ).rejects.toThrow('project_not_found');
+    database.exec(`
+      INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,parent_version_id,language_code,content_text,content_json,source_type,content_hash,created_at,created_by)
+      VALUES('storyboard-v2','workspace','storyboard',2,'storyboard-v1','de',NULL,'{}','HUMAN_EDITED','${'b'.repeat(64)}','t3','owner');
+      UPDATE editorial_artifacts SET current_version_id='storyboard-v2',status='approved',version=3 WHERE id='storyboard';
+      INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,comment,decided_at)
+      VALUES('approve-storyboard-v2','workspace','storyboard-v2','APPROVED','owner','owner',NULL,'t3');
+      INSERT INTO audit_events(id,workspace_id,actor_type,actor_id,actor_role,action,resource_type,resource_id,outcome,request_id,environment,metadata_json,occurred_at,ingested_at)
+      VALUES('resolution-audit','workspace','user','owner','owner','editorial.revision_request_resolved','editorial_revision_request','${requestId}','success','r','staging','{}','t3','t3');
+      INSERT INTO editorial_revision_request_resolutions(id,workspace_id,project_id,revision_request_id,status,resolution_artifact_version_id,resolution_evidence_json,resolved_by,idempotency_key,command_hash,audit_event_id,resolved_at)
+      VALUES('resolution','workspace','project','${requestId}','RESOLVED','storyboard-v2','{}','owner','resolved-key','${'f'.repeat(64)}','resolution-audit','t3');
+    `);
+    expect(
+      (
+        await evaluateEditorialProductionReadiness(d1, actor, 'project', 'BEFORE_STORYBOARD', {
+          ...options,
+          storyboardReplacementRevisionRequestId: requestId,
+        })
+      ).storyboardReplacementSnapshot,
+    ).toBeUndefined();
+  });
+
+  it('rolls back a publication batch when any captured source changes', async () => {
+    for (const mutation of [
+      "UPDATE idea_candidates SET version=version+1 WHERE id='selected-v2'",
+      "UPDATE artifact_dependencies SET validity_status='STALE',version=version+1 WHERE id='dep-ri-v2'",
+      "UPDATE editorial_artifacts SET version=version+1 WHERE id='research'",
+      "UPDATE editorial_artifacts SET version=version+1 WHERE id='brief'",
+      "UPDATE editorial_artifacts SET version=version+1 WHERE id='script'",
+      "UPDATE editorial_artifacts SET version=version+1 WHERE id='critique'",
+      "INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,comment,decided_at) VALUES('reject-critique-v2','workspace','critique-v2','REJECTED','owner','owner','changed','t3')",
+      "UPDATE projects SET version=version+1 WHERE id='project'",
+      "UPDATE projects SET format='LONG_FORM' WHERE id='project'",
+      "UPDATE editorial_artifacts SET version=version+1 WHERE id='storyboard'",
+    ]) {
+      const { database, d1, requestId } = await storyboardReplacementFixture();
+      const readiness = await evaluateEditorialProductionReadiness(
+        d1,
+        actor,
+        'project',
+        'BEFORE_STORYBOARD',
+        {
+          inputArtifactVersionId: 'script-v2',
+          storyboardReplacementRevisionRequestId: requestId,
+        },
+      );
+      const snapshot = readiness.storyboardReplacementSnapshot!;
+      database.exec(mutation);
+      await expect(
+        d1.batch([
+          storyboardReplacementGuard(d1, snapshot),
+          d1.prepare(
+            "INSERT INTO artifact_status_events(id,workspace_id,artifact_id,next_status,occurred_at) VALUES('should-not-persist','workspace','storyboard','active','t')",
+          ),
+        ]),
+      ).rejects.toThrow();
+      expect(
+        database
+          .prepare(
+            "SELECT COUNT(*) count FROM artifact_status_events WHERE id='should-not-persist'",
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+    }
+  });
+  it('fails the atomic policy guard when model or pricing drifts after dispatch', async () => {
+    for (const mutation of [
+      "UPDATE ai_provider_models SET status='inactive',version=version+1 WHERE id='storyboard-model'",
+      "INSERT INTO ai_pricing_snapshots(id,provider_model_id,currency,input_unit_price,output_unit_price,unit_name,verification_status,effective_from,created_at) VALUES('new-storyboard-price','storyboard-model','USD',0.003,0.004,'token','owner_approved','t3','t3')",
+    ]) {
+      const { database, d1 } = await storyboardReplacementFixture();
+      database.exec(
+        "INSERT INTO ai_providers(id,key,display_name,status,adapter_version,created_at,updated_at,version) VALUES('storyboard-provider','openai','OpenAI','configured','v1','t','t',1);",
+      );
+      database.exec(
+        "INSERT INTO ai_provider_models(id,provider_id,model_key,display_name,status,capabilities_json,effective_from,created_at,updated_at,version) VALUES('storyboard-model','storyboard-provider','terra','Terra','available','{}','t','t','t',2);",
+      );
+      database.exec(
+        "INSERT INTO ai_pricing_snapshots(id,provider_model_id,currency,input_unit_price,output_unit_price,unit_name,verification_status,effective_from,created_at) VALUES('storyboard-price','storyboard-model','USD',0.001,0.002,'token','owner_approved','t','t');",
+      );
+      database.exec(
+        "INSERT INTO prompt_definitions(id,key,task_type,description,status,created_at,updated_at,version) VALUES('storyboard-definition','storyboard','STORYBOARD_PLANNER','prompt','active','t','t',1);",
+      );
+      database.exec(
+        "INSERT INTO prompt_versions(id,prompt_definition_id,version_number,template_text,input_schema_version,output_schema_version,status,content_hash,created_at) VALUES('storyboard-prompt','storyboard-definition',1,'Prompt','v2','storyboard-output-v2','active','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','t');",
+      );
+      const policy = {
+        promptVersionId: 'storyboard-prompt',
+        providerId: 'storyboard-provider',
+        providerVersion: 1,
+        modelId: 'storyboard-model',
+        modelVersion: 2,
+        pricingSnapshotId: 'storyboard-price',
+        inputPrice: 0.001,
+        outputPrice: 0.002,
+        verificationStatus: 'owner_approved',
+      };
+      await expect(storyboardExecutionPolicyGuard(d1, policy).first()).resolves.toBeTruthy();
+      database.exec(mutation);
+      await expect(
+        d1.batch([
+          storyboardExecutionPolicyGuard(d1, policy),
+          d1.prepare(
+            "INSERT INTO artifact_status_events(id,workspace_id,artifact_id,next_status,occurred_at) VALUES('policy-should-not-persist','workspace','storyboard','active','t')",
+          ),
+        ]),
+      ).rejects.toThrow();
+      expect(
+        database
+          .prepare(
+            "SELECT COUNT(*) count FROM artifact_status_events WHERE id='policy-should-not-persist'",
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+    }
+  });
+});
+
+describe('Storyboard exact Script segment snapshot guard', () => {
+  const mutations = [
+    ['text', "UPDATE script_segments SET content_text='CHANGED' WHERE id='segment-v2'"],
+    [
+      'order',
+      "UPDATE script_segments SET segment_order=3 WHERE id='segment-v2'; UPDATE script_segments SET segment_order=1 WHERE id='segment-v2-2'; UPDATE script_segments SET segment_order=2 WHERE id='segment-v2'",
+    ],
+    ['deletion', "DELETE FROM script_segments WHERE id='segment-v2-2'"],
+    [
+      'insertion',
+      "INSERT INTO script_segments(id,workspace_id,script_version_id,segment_order,content_text,content_hash,word_count,created_at) VALUES('segment-v2-3','workspace','script-v2',3,'Ein zusätzlicher Satz.','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',4,'t3')",
+    ],
+    [
+      'id replacement',
+      "UPDATE script_segments SET id='segment-v2-replaced' WHERE id='segment-v2-2'",
+    ],
+    [
+      'multiple fields',
+      "UPDATE script_segments SET id='segment-v2-changed',content_text='CHANGED' WHERE id='segment-v2'",
+    ],
+  ] as const;
+  it('accepts exact no-drift rows and produces a deterministic SHA-256 fingerprint', async () => {
+    const { database, d1, requestId } = await storyboardReplacementFixture();
+    const readiness = await evaluateEditorialProductionReadiness(
+      d1,
+      actor,
+      'project',
+      'BEFORE_STORYBOARD',
+      {
+        inputArtifactVersionId: 'script-v2',
+        storyboardReplacementRevisionRequestId: requestId,
+      },
+    );
+    const snapshot = readiness.storyboardReplacementSnapshot!.scriptSegmentSnapshot;
+    expect(snapshot.count).toBe(2);
+    expect(snapshot.canonicalJson).toBe(
+      JSON.stringify([
+        ['segment-v2', 1, 'Die technische Entwicklung ist historisch belegt.'],
+        ['segment-v2-2', 2, 'Ein zweiter belegter Satz.'],
+      ]),
+    );
+    expect(snapshot.hash).toMatch(/^[0-9a-f]{64}$/);
+    const reordered = await createStoryboardSegmentSnapshot(
+      'workspace',
+      'project',
+      'script-v2',
+      [...snapshot.segments].reverse(),
+    );
+    expect(reordered.canonicalJson).toBe(snapshot.canonicalJson);
+    expect(reordered.hash).toBe(snapshot.hash);
+    await expect(storyboardSegmentGuard(d1, snapshot).first()).resolves.toBeTruthy();
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+  it.each(mutations)('rolls back the publication batch on %s drift', async (_name, mutation) => {
+    const { database, d1, requestId } = await storyboardReplacementFixture();
+    const readiness = await evaluateEditorialProductionReadiness(
+      d1,
+      actor,
+      'project',
+      'BEFORE_STORYBOARD',
+      {
+        inputArtifactVersionId: 'script-v2',
+        storyboardReplacementRevisionRequestId: requestId,
+      },
+    );
+    const snapshot = readiness.storyboardReplacementSnapshot!.scriptSegmentSnapshot;
+    database.exec(mutation);
+    await expect(
+      d1.batch([
+        storyboardSegmentGuard(d1, snapshot),
+        d1.prepare(
+          "INSERT INTO artifact_status_events(id,workspace_id,artifact_id,next_status,occurred_at) VALUES('segment-drift-must-rollback','workspace','storyboard','active','t')",
+        ),
+      ]),
+    ).rejects.toThrow();
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) count FROM artifact_status_events WHERE id='segment-drift-must-rollback'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+});
+
+describe('Storyboard exact Research claim registry and atomic guard', () => {
+  it('binds supported IDs to the exact current approved Research version and project', async () => {
+    const { database, d1 } = await storyboardReplacementFixture();
+    const snapshot = await loadStoryboardResearchClaimSnapshot(
+      d1,
+      'workspace',
+      'project',
+      'research-v2',
+    );
+    const supported = (ids: string[]) => ({
+      scenes: [
+        { factualClaims: [{ status: 'SUPPORTED_BY_APPROVED_RESEARCH', researchClaimIds: ids }] },
+      ],
+    });
+    expect(snapshot.count).toBe(1);
+    expect(snapshot.claims[0]?.id).toBe('claim-v2');
+    expect(validateStoryboardFactualClaims(supported(['claim-v2']), snapshot)).toEqual([
+      'claim-v2',
+    ]);
+    expect(() => validateStoryboardFactualClaims(supported(['claim-v1']), snapshot)).toThrow();
+    database.exec(`
+      INSERT INTO projects(id,workspace_id,content_brand_id,channel_profile_id,title,status,format,operating_mode,primary_language,created_at,updated_at,version)
+        VALUES('other-project','workspace','brand','channel','Other','ANALYZING','SHORT','ASSISTED','de','t','t',1);
+      INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,current_version_id,status,created_at,updated_at,version,created_by,updated_by)
+        VALUES('other-research','workspace','other-project','RESEARCH','other-research-v','approved','t','t',1,'owner','owner');
+      INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_json,source_type,content_hash,created_at,created_by)
+        VALUES('other-research-v','workspace','other-research',1,'de','{}','HUMAN_EDITED','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','t','owner');
+      INSERT INTO research_sources(id,workspace_id,research_version_id,source_type,title,source_reference,verification_status,created_at,created_by)
+        VALUES('other-source','workspace','other-research-v','ARCHIVE','Other source','ref','owner_approved','t','owner');
+      INSERT INTO research_claims(id,workspace_id,research_version_id,source_id,claim_text,evidence_class,created_at,created_by)
+        VALUES('other-claim','workspace','other-research-v','other-source','Other fact','OBSERVED','t','owner');
+    `);
+    expect(() => validateStoryboardFactualClaims(supported(['other-claim']), snapshot)).toThrow();
+    expect(() =>
+      validateStoryboardFactualClaims(supported(['claim-v2', 'other-claim']), snapshot),
+    ).toThrow();
+    await expect(storyboardResearchClaimGuard(d1, snapshot).first()).resolves.toBeTruthy();
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it.each([
+    ['delete', "DELETE FROM research_claims WHERE id='claim-v2'"],
+    [
+      'insert',
+      "INSERT INTO research_claims(id,workspace_id,research_version_id,claim_text,evidence_class,created_at,created_by) VALUES('inserted-claim','workspace','research-v2','New inference','UNKNOWN','t','owner')",
+    ],
+    ['text', "UPDATE research_claims SET claim_text='Changed fact' WHERE id='claim-v2'"],
+    ['id', "UPDATE research_claims SET id='replacement-claim-id' WHERE id='claim-v2'"],
+    ['evidence', "UPDATE research_sources SET verification_status='stale' WHERE id='source-v2'"],
+    [
+      'current version',
+      "UPDATE editorial_artifacts SET current_version_id='research-v1' WHERE id='research'",
+    ],
+  ])('rolls back terminal publication on Research claim %s drift', async (_case, mutation) => {
+    const { database, d1 } = await storyboardReplacementFixture();
+    const snapshot = await loadStoryboardResearchClaimSnapshot(
+      d1,
+      'workspace',
+      'project',
+      'research-v2',
+    );
+    database.exec(mutation);
+    await expect(
+      d1.batch([
+        storyboardResearchClaimGuard(d1, snapshot),
+        d1.prepare(
+          "INSERT INTO artifact_status_events(id,workspace_id,artifact_id,next_status,occurred_at) VALUES('claim-guard-rollback','workspace','storyboard','active','t')",
+        ),
+      ]),
+    ).rejects.toThrow();
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) count FROM artifact_status_events WHERE id='claim-guard-rollback'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+});
+
+describe('Storyboard persisted project-format guard', () => {
+  it('rolls back publication when format drifts without an optimistic version increment', async () => {
+    const { database, d1, requestId } = await storyboardReplacementFixture();
+    const readiness = await evaluateEditorialProductionReadiness(
+      d1,
+      actor,
+      'project',
+      'BEFORE_STORYBOARD',
+      {
+        inputArtifactVersionId: 'script-v2',
+        storyboardReplacementRevisionRequestId: requestId,
+      },
+    );
+    expect(readiness.storyboardReplacementSnapshot?.authoritativeProjectFormat).toBe('SHORT');
+    database.exec("UPDATE projects SET format='LONG_FORM' WHERE id='project'");
+    await expect(
+      d1.batch([
+        storyboardProjectFormatGuard(d1, 'workspace', 'project', 'SHORT'),
+        d1.prepare(
+          "INSERT INTO artifact_status_events(id,workspace_id,artifact_id,next_status,occurred_at) VALUES('format-drift-must-rollback','workspace','storyboard','active','t')",
+        ),
+      ]),
+    ).rejects.toThrow();
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) count FROM artifact_status_events WHERE id='format-drift-must-rollback'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+});
+
+const storyboardFormatScene = (aspectRatio: '9:16' | '16:9') => ({
+  order: 1,
+  targetDurationSeconds: 60,
+  scriptSegmentIds: ['segment-v2'],
+  narrationMode: 'AUTHORITATIVE_SCRIPT_SEGMENTS' as const,
+  visualDescription: 'Eine historische Szene zeigt die technische Entwicklung.',
+  location: 'Berlin',
+  action: 'Die Kamera begleitet die Erklaerung.',
+  cameraFraming: 'Nahaufnahme',
+  cameraMovement: 'Langsame Fahrt',
+  mood: 'Nachdenklich',
+  continuityKey: null,
+  continuityReferenceKeys: [],
+  continuityNotes: '',
+  transitionNotes: '',
+  aspectRatio,
+  safeAreaGuidance: { protectTop: true, protectBottom: true, protectSides: true, notes: '' },
+  onScreenText: [],
+  captions: {
+    mode: 'REQUIRED' as const,
+    languageCode: 'de',
+    sourceScriptSegmentIds: ['segment-v2'],
+    styleGuidance: '',
+    safeAreaNotes: '',
+  },
+  factualClaims: [],
+  recommendedMediaType: 'IMAGE' as const,
+  assetRequirements: [],
+  mediaReferences: [],
+  generationInstructions: '',
+  characterVersionIds: [],
+  audioGuidance: {
+    ambience: '',
+    soundEffects: [],
+    music: { use: 'NONE' as const, guidance: '', rightsStatus: 'UNKNOWN' as const },
+  },
+});
+
+describe('Storyboard format failure after one local provider dispatch', () => {
+  it.each([
+    'mismatch',
+    'drift',
+    'segment-text',
+    'segment-order',
+    'segment-delete',
+    'segment-insert',
+    'segment-id',
+    'segment-multi',
+    'claim-delete',
+    'claim-insert',
+    'claim-text',
+    'claim-id',
+    'claim-current-version',
+    'claim-fabricated',
+  ] as const)('%s reconciles cost and replays without another provider call', async (failure) => {
+    const h = await storyboardReplacementFixture();
+    h.database.exec(`
+        INSERT INTO ai_providers(id,key,display_name,status,adapter_version,created_at,updated_at,version)
+        VALUES('format-provider','openai','OpenAI','configured','1','t','t',1);
+        INSERT INTO ai_provider_models(id,provider_id,model_key,display_name,status,capabilities_json,effective_from,created_at,updated_at,version)
+        VALUES('format-model','format-provider','gpt-5.6-terra','Terra','available','{"qualityTier":"BALANCED","costRank":2,"capabilities":["STRUCTURED_OUTPUT","STORYBOARD_PLANNING"]}','t','t','t',1);
+        INSERT INTO ai_pricing_snapshots(id,provider_model_id,currency,input_unit_price,output_unit_price,unit_name,source_label,verification_status,effective_from,created_at)
+        VALUES('format-pricing','format-model','USD',0.000004,0.00002,'token','test','externally_verified','t','t');
+        INSERT INTO editorial_project_execution_budgets(id,workspace_id,project_id,profile_key,profile_version,currency,monetary_ceiling_microusd,status,authorized_by,created_at,updated_at,version)
+        VALUES('format-budget','workspace','project','phase3_terminal_graph_v1',1,'USD',600000,'ACTIVE','owner','t','t',1);
+        INSERT INTO editorial_execution_envelopes(id,workspace_id,project_id,profile_key,profile_version,provider_id,provider_model_id,currency,monetary_ceiling_microusd,maximum_calls,status,authorized_by,created_at,updated_at,version,project_execution_budget_id,stage_key)
+        VALUES('format-envelope','workspace','project','phase3_terminal_graph_v1',1,'format-provider','format-model','USD',600000,1,'ACTIVE','owner','t','t',1,'format-budget','STORYBOARD_PLANNER');
+        INSERT INTO prompt_versions(id,prompt_definition_id,version_number,template_text,input_schema_version,output_schema_version,status,content_hash,created_at)
+        VALUES('format-prompt','prompt_storyboard_planner',1,'Storyboard {{context_json}}','v2','storyboard-output-v2','active','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee','t');
+      `);
+    const execution = new EditorialExecutionService(h.d1, actor, {
+      openAIEnabled: true,
+      openAIApiKey: 'local-test-only',
+      openAIBaseUrl: 'https://invalid.test',
+      requestId: 'format-test',
+      environment: 'test',
+    });
+    const format = failure === 'mismatch' ? 'LONG_FORM' : 'SHORT';
+    const aspect = format === 'LONG_FORM' ? '16:9' : '9:16';
+    const provider = vi
+      .spyOn(OpenAIResponsesAdapter.prototype, 'execute')
+      .mockImplementation(() => {
+        if (failure === 'drift')
+          h.database.exec("UPDATE projects SET format='LONG_FORM' WHERE id='project'");
+        const segmentMutation = {
+          'segment-text': "UPDATE script_segments SET content_text='CHANGED' WHERE id='segment-v2'",
+          'segment-order':
+            "UPDATE script_segments SET segment_order=3 WHERE id='segment-v2'; UPDATE script_segments SET segment_order=1 WHERE id='segment-v2-2'; UPDATE script_segments SET segment_order=2 WHERE id='segment-v2'",
+          'segment-delete': "DELETE FROM script_segments WHERE id='segment-v2-2'",
+          'segment-insert':
+            "INSERT INTO script_segments(id,workspace_id,script_version_id,segment_order,content_text,content_hash,word_count,created_at) VALUES('segment-v2-3','workspace','script-v2',3,'Ein zusätzlicher Satz.','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',4,'t3')",
+          'segment-id':
+            "UPDATE script_segments SET id='segment-v2-replaced' WHERE id='segment-v2-2'",
+          'segment-multi':
+            "UPDATE script_segments SET id='segment-v2-changed',content_text='CHANGED' WHERE id='segment-v2'",
+        } as const;
+        if (failure in segmentMutation)
+          h.database.exec(segmentMutation[failure as keyof typeof segmentMutation]);
+        const claimMutation = {
+          'claim-delete': "DELETE FROM research_claims WHERE id='claim-v2'",
+          'claim-insert':
+            "INSERT INTO research_claims(id,workspace_id,research_version_id,claim_text,evidence_class,created_at,created_by) VALUES('new-claim','workspace','research-v2','New inference','UNKNOWN','t','owner')",
+          'claim-text': "UPDATE research_claims SET claim_text='Altered fact' WHERE id='claim-v2'",
+          'claim-id': "UPDATE research_claims SET id='new-claim-id' WHERE id='claim-v2'",
+          'claim-current-version':
+            "UPDATE editorial_artifacts SET current_version_id='research-v1' WHERE id='research'",
+        } as const;
+        if (failure in claimMutation)
+          h.database.exec(claimMutation[failure as keyof typeof claimMutation]);
+        return Promise.resolve({
+          output: {
+            contractVersion: 'storyboard-output-v2',
+            projectFormat: format,
+            aspectRatio: aspect,
+            scenes: [
+              {
+                ...storyboardFormatScene(aspect),
+                factualClaims: failure.startsWith('claim-')
+                  ? [
+                      {
+                        claimText: 'Ein historisch belegtes Ereignis.',
+                        status: 'SUPPORTED_BY_APPROVED_RESEARCH',
+                        researchClaimIds: [
+                          failure === 'claim-fabricated'
+                            ? 'research_claim_does_not_exist'
+                            : 'claim-v2',
+                        ],
+                        visualTreatment: 'Historische Abbildung.',
+                      },
+                    ]
+                  : [],
+              },
+            ],
+          },
+          usage: {
+            inputUnits: 100,
+            outputUnits: 100,
+            cachedInputUnits: 0,
+            reasoningOutputUnits: 0,
+            unitName: 'token',
+          },
+          providerRequestId: 'local-format-provider-request',
+          safeMetadata: { responseStatus: 'completed' },
+        });
+      });
+    const command = {
+      mode: 'LOCKED' as const,
+      preferredProviderKey: 'openai',
+      preferredModelKey: 'gpt-5.6-terra',
+      inputArtifactVersionId: 'script-v2',
+      creativeRegeneration: false,
+      storyboardReplacementIntent: 'OPEN_REVISION_REPLACEMENT' as const,
+      storyboardRevisionRequestId: h.requestId,
+    };
+    const key = 'local-format-' + failure;
+    const originalDependencies = count(h.database, 'artifact_dependencies');
+    const d1Metrics = h.d1 as unknown as AtomicD1;
+    d1Metrics.queryCount = 0;
+    d1Metrics.maxBatchStatements = 0;
+    d1Metrics.maxBatchBindings = 0;
+    try {
+      await expect(
+        execution.execute('project', 'STORYBOARD_PLANNER', command, key),
+      ).rejects.toThrow();
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(d1Metrics.queryCount).toBeLessThanOrEqual(250);
+      expect(d1Metrics.maxBatchStatements).toBeLessThanOrEqual(150);
+      expect(d1Metrics.maxBatchBindings).toBeLessThanOrEqual(100);
+      const run = h.database
+        .prepare(
+          'SELECT id,status,input_units inputUnits,output_units outputUnits,actual_cost actualCost,output_artifact_version_id outputVersionId FROM intelligence_runs WHERE idempotency_key=?',
+        )
+        .get(key) as {
+        id: string;
+        status: string;
+        inputUnits: number;
+        outputUnits: number;
+        actualCost: number;
+        outputVersionId: string | null;
+      };
+      expect(run).toMatchObject({
+        status: 'FAILED_PERMANENT',
+        inputUnits: 100,
+        outputUnits: 100,
+        actualCost: 0.0024,
+        outputVersionId: null,
+      });
+      expect(
+        h.database
+          .prepare(
+            'SELECT status,provider_request_id providerRequestId FROM intelligence_run_attempts WHERE intelligence_run_id=?',
+          )
+          .get(run.id),
+      ).toEqual({
+        status: 'FAILED_PERMANENT',
+        providerRequestId: 'local-format-provider-request',
+      });
+      expect(
+        h.database
+          .prepare(
+            'SELECT status,actual_microusd actualMicrousd FROM editorial_execution_reservations WHERE intelligence_run_id=?',
+          )
+          .get(run.id),
+      ).toEqual({ status: 'RECONCILED', actualMicrousd: 2400 });
+      expect(
+        h.database
+          .prepare("SELECT status FROM editorial_execution_envelopes WHERE id='format-envelope'")
+          .get(),
+      ).toEqual({ status: 'CONSUMED' });
+      expect(
+        h.database
+          .prepare(
+            "SELECT current_version_id currentVersionId FROM editorial_artifacts WHERE id='storyboard'",
+          )
+          .get(),
+      ).toEqual({ currentVersionId: 'storyboard-v1' });
+      expect(
+        h.database
+          .prepare(
+            "SELECT COUNT(*) count FROM editorial_artifact_versions WHERE artifact_id='storyboard'",
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+      expect(count(h.database, 'artifact_dependencies')).toBe(originalDependencies);
+      expect(count(h.database, 'editorial_revision_request_resolutions')).toBe(0);
+      expect(
+        (await execution.execute('project', 'STORYBOARD_PLANNER', command, key)).idempotentReplay,
+      ).toBe(true);
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(h.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      provider.mockRestore();
+      h.database.close();
+    }
   });
 });

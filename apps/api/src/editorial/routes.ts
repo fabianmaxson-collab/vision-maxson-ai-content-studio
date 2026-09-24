@@ -857,6 +857,12 @@ for (const [route, task] of taskRoutes)
           inputArtifactVersionId,
           creativeRegeneration: parsed.data.creativeRegeneration,
           ...(parsed.data.remediationId ? { remediationId: parsed.data.remediationId } : {}),
+          ...(parsed.data.storyboardReplacementIntent
+            ? { storyboardReplacementIntent: parsed.data.storyboardReplacementIntent }
+            : {}),
+          ...(parsed.data.storyboardRevisionRequestId
+            ? { storyboardRevisionRequestId: parsed.data.storyboardRevisionRequestId }
+            : {}),
           ...(parsed.data.contentBriefRevisionCapacityId
             ? { contentBriefRevisionCapacityId: parsed.data.contentBriefRevisionCapacityId }
             : {}),

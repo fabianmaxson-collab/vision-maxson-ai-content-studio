@@ -1,4 +1,8 @@
 import type { EditorialActor } from './repository';
+import {
+  loadStoryboardReplacementSnapshot,
+  type StoryboardReplacementSnapshot,
+} from './storyboard-replacement';
 
 export type EditorialReadinessCheckpoint =
   | 'BEFORE_PRODUCTION_SCRIPT'
@@ -19,6 +23,7 @@ export interface EditorialProductionReadiness {
   evaluatedArtifactVersionIds: string[];
   evaluatedAt: string;
   remediationIdentity?: ResearchRemediationIdentity;
+  storyboardReplacementSnapshot?: StoryboardReplacementSnapshot;
 }
 type Row = Record<string, unknown>;
 
@@ -53,7 +58,11 @@ export async function evaluateEditorialProductionReadiness(
   actor: EditorialActor,
   projectId: string,
   checkpoint: EditorialReadinessCheckpoint,
-  options: { ignoreRevisionRequestId?: string; inputArtifactVersionId?: string | null } = {},
+  options: {
+    ignoreRevisionRequestId?: string;
+    inputArtifactVersionId?: string | null;
+    storyboardReplacementRevisionRequestId?: string;
+  } = {},
 ): Promise<EditorialProductionReadiness> {
   await assertEditorialRevisionSchemaReady(db);
   const project = await db
@@ -276,7 +285,28 @@ export async function evaluateEditorialProductionReadiness(
     }
   }
 
+  let storyboardReplacementSnapshot: StoryboardReplacementSnapshot | undefined;
+  if (
+    checkpoint === 'BEFORE_STORYBOARD' &&
+    options.storyboardReplacementRevisionRequestId &&
+    openRevision?.id === options.storyboardReplacementRevisionRequestId &&
+    blockers.size === 1 &&
+    blockers.has('OPEN_REVISION_REQUEST')
+  ) {
+    const snapshot = await loadStoryboardReplacementSnapshot(
+      db,
+      actor,
+      projectId,
+      options.storyboardReplacementRevisionRequestId,
+      options.inputArtifactVersionId ?? null,
+    );
+    if (snapshot) {
+      blockers.delete('OPEN_REVISION_REQUEST');
+      storyboardReplacementSnapshot = snapshot;
+    }
+  }
   return {
+    ...(storyboardReplacementSnapshot ? { storyboardReplacementSnapshot } : {}),
     ...(remediationIdentity ? { remediationIdentity } : {}),
     ready: blockers.size === 0,
     checkpoint,

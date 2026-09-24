@@ -3,6 +3,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { storyboardOutputV2Schema } from '@vision-maxson/contracts';
 import { describe, expect, it } from 'vitest';
 import { EditorialExecutionService } from '../src/editorial/execution';
+import {
+  loadStoryboardResearchClaimSnapshot,
+  validateStoryboardFactualClaims,
+  type StoryboardResearchClaimSnapshot,
+} from '../src/editorial/storyboard-research-claims';
+import {
+  createStoryboardSegmentSnapshot,
+  type StoryboardSegmentSnapshot,
+} from '../src/editorial/storyboard-replacement';
 
 const migrationNames = [
   '0000_phase_1_data_security_core.sql',
@@ -42,11 +51,15 @@ class SqliteStatement {
 
 class TransactionalD1 {
   failBatchAfter: number | null = null;
+  queryCount = 0;
+  maxBatchStatements = 0;
   constructor(readonly database: DatabaseSync) {}
   prepare(sql: string) {
+    this.queryCount += 1;
     return new SqliteStatement(this.database, sql);
   }
   async batch(statements: SqliteStatement[]) {
+    this.maxBatchStatements = Math.max(this.maxBatchStatements, statements.length);
     this.database.exec('BEGIN');
     try {
       for (const [index, statement] of statements.entries()) {
@@ -91,6 +104,9 @@ type Persist = (
     metadata: Record<string, unknown>;
     governed: boolean;
     reservedMicrousd: null;
+    storyboardAuthoritativeFormat: 'SHORT' | 'LONG_FORM';
+    storyboardSegmentSnapshot: StoryboardSegmentSnapshot;
+    storyboardResearchClaimSnapshot: StoryboardResearchClaimSnapshot;
   },
 ) => Promise<string>;
 
@@ -110,11 +126,13 @@ function harness() {
       ('project','workspace','brand','channel','P','SHORT','ASSISTED','de','ANALYZING','t','t',1),
       ('other_project','workspace','brand','channel','Other','SHORT','ASSISTED','de','ANALYZING','t','t',1);
     INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,status,current_version_id,created_at,updated_at,version,created_by,updated_by) VALUES
+      ('research','workspace','project','RESEARCH','approved','research_v','t','t',1,'owner','owner'),
       ('script','workspace','project','PRODUCTION_SCRIPT','approved','script_v','t','t',1,'owner','owner'),
       ('critique','workspace','project','SCRIPT_CRITIQUE','approved','critique_v','t','t',1,'owner','owner'),
       ('other_script','workspace','other_project','PRODUCTION_SCRIPT','approved','other_script_v','t','t',1,'owner','owner');
     INSERT INTO intelligence_runs(id,workspace_id,project_id,task_type,initiated_by,operating_mode,status,idempotency_key,created_at,updated_at,version) VALUES('run','workspace','project','STORYBOARD_PLANNER','owner','ASSISTED','RUNNING','storyboard-test','t','t',1);
     INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_json,source_type,content_hash,created_at,created_by) VALUES
+      ('research_v','workspace','research',1,'de','{}','HUMAN_EDITED','9999999999999999999999999999999999999999999999999999999999999999','t','owner'),
       ('script_v','workspace','script',1,'de','{}','HUMAN_EDITED','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','t','owner'),
       ('critique_v','workspace','critique',1,'de','{}','HUMAN_EDITED','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','t','owner'),
       ('other_script_v','workspace','other_script',1,'de','{}','HUMAN_EDITED','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc','t','owner');
@@ -122,6 +140,12 @@ function harness() {
       ('segment_1','workspace','script_v',1,'Erster Satz.','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',2,'t'),
       ('segment_2','workspace','script_v',2,'Zweiter Satz.','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',2,'t'),
       ('other_segment','workspace','other_script_v',1,'Fremder Satz.','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',2,'t');
+    INSERT INTO artifact_approvals(id,workspace_id,artifact_version_id,decision,actor_id,actor_role,decided_at)
+      VALUES('research_approval','workspace','research_v','APPROVED','owner','owner','t');
+    INSERT INTO research_sources(id,workspace_id,research_version_id,source_type,title,source_reference,verification_status,created_at,created_by)
+      VALUES('source_1','workspace','research_v','ARCHIVE','Archive','ref','owner_approved','t','owner');
+    INSERT INTO research_claims(id,workspace_id,research_version_id,source_id,claim_text,evidence_class,created_at,created_by)
+      VALUES('claim_1','workspace','research_v','source_1','Evidenced event','OBSERVED','t','owner');
     INSERT INTO intelligence_run_attempts(id,intelligence_run_id,attempt_number,attempt_kind,status,started_at) VALUES('attempt','run',1,'TECHNICAL','RUNNING','t');
   `);
   const db = new TransactionalD1(database);
@@ -185,14 +209,32 @@ const scene = (scriptSegmentIds: string[] = ['segment_1', 'segment_2']) => ({
   },
 });
 
-const output = (scriptSegmentIds?: string[]) => ({
+const output = (scriptSegmentIds?: string[], researchClaimIds?: string[]) => ({
   contractVersion: 'storyboard-output-v2' as const,
   projectFormat: 'SHORT' as const,
   aspectRatio: '9:16' as const,
-  scenes: [scene(scriptSegmentIds)],
+  scenes: [
+    {
+      ...scene(scriptSegmentIds),
+      factualClaims: researchClaimIds
+        ? [
+            {
+              claimText: 'Historisch belegtes Ereignis',
+              status: 'SUPPORTED_BY_APPROVED_RESEARCH',
+              researchClaimIds,
+              visualTreatment: 'Historische Illustration',
+            },
+          ]
+        : [],
+    },
+  ],
 });
 
-const completion = (value: unknown) => ({
+const completion = (
+  value: unknown,
+  storyboardSegmentSnapshot: StoryboardSegmentSnapshot,
+  storyboardResearchClaimSnapshot: StoryboardResearchClaimSnapshot,
+) => ({
   result: {
     output: value,
     providerRequestId: 'provider-request',
@@ -209,6 +251,9 @@ const completion = (value: unknown) => ({
   metadata: {},
   governed: false,
   reservedMicrousd: null,
+  storyboardAuthoritativeFormat: 'SHORT' as const,
+  storyboardSegmentSnapshot,
+  storyboardResearchClaimSnapshot,
 });
 
 const graphCounts = (database: DatabaseSync) => ({
@@ -229,6 +274,22 @@ const graphCounts = (database: DatabaseSync) => ({
 });
 
 async function persistStoryboard(h: ReturnType<typeof harness>, value: ReturnType<typeof output>) {
+  const storyboardSegmentSnapshot = await createStoryboardSegmentSnapshot(
+    'workspace',
+    'project',
+    'script_v',
+    [
+      { id: 'segment_1', order: 1, text: 'Erster Satz.' },
+      { id: 'segment_2', order: 2, text: 'Zweiter Satz.' },
+    ],
+  );
+  const storyboardResearchClaimSnapshot = await loadStoryboardResearchClaimSnapshot(
+    h.db as unknown as D1Database,
+    'workspace',
+    'project',
+    'research_v',
+  );
+  validateStoryboardFactualClaims(value, storyboardResearchClaimSnapshot);
   return h.persist(
     'project',
     'STORYBOARD_PLANNER',
@@ -241,14 +302,14 @@ async function persistStoryboard(h: ReturnType<typeof harness>, value: ReturnTyp
       { sourceVersionId: 'critique_v', dependencyType: 'INFORMED_BY' },
     ],
     value,
-    completion(value),
+    completion(value, storyboardSegmentSnapshot, storyboardResearchClaimSnapshot),
   );
 }
 
 describe('Storyboard V2 terminal persistence', () => {
   it('persists the complete graph, exact ordered segment links, lineage, run and audit atomically', async () => {
     const h = harness();
-    const versionId = await persistStoryboard(h, output());
+    const versionId = await persistStoryboard(h, output(undefined, ['claim_1']));
 
     expect(graphCounts(h.database)).toEqual({
       artifacts: { count: 1 },
@@ -283,6 +344,13 @@ describe('Storyboard V2 terminal persistence', () => {
         .prepare('SELECT status,output_artifact_version_id outputVersionId FROM intelligence_runs')
         .get(),
     ).toEqual({ status: 'SUCCEEDED', outputVersionId: versionId });
+    expect(
+      h.database.prepare('SELECT factual_claims_json factualClaims FROM storyboard_scenes').get(),
+    ).toEqual({
+      factualClaims: JSON.stringify(output(undefined, ['claim_1']).scenes[0]!.factualClaims),
+    });
+    expect(h.db.maxBatchStatements).toBeLessThanOrEqual(150);
+    expect(h.db.queryCount).toBeLessThanOrEqual(250);
     expect(h.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
@@ -330,6 +398,74 @@ describe('Storyboard V2 terminal persistence', () => {
     expect(h.database.prepare('SELECT status FROM intelligence_run_attempts').get()).toEqual({
       status: 'RUNNING',
     });
+    expect(h.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+  it('creates a replacement v2 on the same artifact and preserves historical v1', async () => {
+    const h = harness();
+    h.database.exec(`
+      INSERT INTO intelligence_runs(id,workspace_id,project_id,task_type,initiated_by,operating_mode,status,idempotency_key,created_at,updated_at,version)
+      VALUES('old_run','workspace','project','STORYBOARD_PLANNER','owner','ASSISTED','RUNNING','old-storyboard','t','t',1);
+      INSERT INTO editorial_artifacts(id,workspace_id,project_id,artifact_type,status,current_version_id,created_at,updated_at,version,created_by,updated_by)
+      VALUES('old_storyboard','workspace','project','STORYBOARD','active','storyboard_v1','t','t',2,'owner','owner');
+      INSERT INTO editorial_artifact_versions(id,workspace_id,artifact_id,version_number,language_code,content_json,source_type,intelligence_run_id,content_hash,created_at,created_by)
+      VALUES('storyboard_v1','workspace','old_storyboard',1,'de','{}','AI_GENERATED','old_run','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee','t','owner');
+      INSERT INTO artifact_dependencies(id,workspace_id,source_artifact_version_id,dependent_artifact_version_id,dependency_type,validity_status,created_at,updated_at,version,invalidated_at,invalidated_by_version_id)
+      VALUES
+        ('old_script_edge','workspace','script_v','storyboard_v1','GENERATED_FROM','REAPPROVAL_REQUIRED','t','t',2,'t','script_v'),
+        ('old_critique_edge','workspace','critique_v','storyboard_v1','INFORMED_BY','REAPPROVAL_REQUIRED','t','t',2,'t','critique_v');
+    `);
+    const newVersionId = await persistStoryboard(h, output());
+    expect(
+      h.database
+        .prepare(
+          "SELECT current_version_id currentVersionId,status,version FROM editorial_artifacts WHERE id='old_storyboard'",
+        )
+        .get(),
+    ).toEqual({ currentVersionId: newVersionId, status: 'active', version: 3 });
+    expect(
+      h.database
+        .prepare(
+          'SELECT artifact_id artifactId,version_number versionNumber,parent_version_id parentVersionId,source_type sourceType,language_code languageCode FROM editorial_artifact_versions WHERE id=?',
+        )
+        .get(newVersionId),
+    ).toEqual({
+      artifactId: 'old_storyboard',
+      versionNumber: 2,
+      parentVersionId: 'storyboard_v1',
+      sourceType: 'AI_GENERATED',
+      languageCode: 'de',
+    });
+    expect(
+      h.database
+        .prepare(
+          "SELECT content_hash contentHash FROM editorial_artifact_versions WHERE id='storyboard_v1'",
+        )
+        .get(),
+    ).toEqual({
+      contentHash: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    });
+    expect(
+      h.database
+        .prepare(
+          'SELECT dependency_type dependencyType,source_artifact_version_id sourceId,validity_status validityStatus FROM artifact_dependencies WHERE dependent_artifact_version_id=? ORDER BY dependency_type',
+        )
+        .all(newVersionId),
+    ).toEqual([
+      { dependencyType: 'GENERATED_FROM', sourceId: 'script_v', validityStatus: 'CURRENT' },
+      { dependencyType: 'INFORMED_BY', sourceId: 'critique_v', validityStatus: 'CURRENT' },
+    ]);
+    expect(
+      h.database
+        .prepare('SELECT COUNT(*) count FROM artifact_approvals WHERE artifact_version_id=?')
+        .get(newVersionId),
+    ).toEqual({ count: 0 });
+    expect(
+      h.database
+        .prepare(
+          "SELECT COUNT(*) count FROM artifact_dependencies WHERE dependent_artifact_version_id='storyboard_v1' AND validity_status='REAPPROVAL_REQUIRED'",
+        )
+        .get(),
+    ).toEqual({ count: 2 });
     expect(h.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 });

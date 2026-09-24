@@ -560,12 +560,28 @@ export const intelligenceCommandSchema = z
     inputArtifactVersionId: id.nullable().default(null),
     creativeRegeneration: z.boolean().default(false),
     remediationId: id.optional(),
+    storyboardReplacementIntent: z.literal('OPEN_REVISION_REPLACEMENT').optional(),
+    storyboardRevisionRequestId: id.optional(),
     ideaRevisionCapacityId: id.optional(),
     contentBriefRevisionCapacityId: id.optional(),
     productionScriptRetryAuthorizationId: id.optional(),
   })
   .strict()
   .superRefine((value, context) => {
+    if (Boolean(value.storyboardReplacementIntent) !== Boolean(value.storyboardRevisionRequestId))
+      context.addIssue({
+        code: 'custom',
+        message: 'Storyboard replacement requires exact revision identity',
+      });
+    if (
+      value.storyboardReplacementIntent &&
+      (value.ideaRevisionCapacityId ||
+        value.contentBriefRevisionCapacityId ||
+        value.productionScriptRetryAuthorizationId ||
+        value.creativeRegeneration ||
+        !value.inputArtifactVersionId)
+    )
+      context.addIssue({ code: 'custom', message: 'Invalid Storyboard replacement command' });
     if (
       value.ideaRevisionCapacityId &&
       (value.remediationId ||

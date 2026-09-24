@@ -80,18 +80,11 @@ function detect(text: string): Language | 'mixed' | 'unknown' {
   return top;
 }
 
-export function critiqueLanguageFindings(
-  critique: Critique,
+export function editorialLanguageFindings(
+  fields: readonly { field: string; text: string }[],
   sourceLanguage: string,
 ): CritiqueLanguageFinding[] {
   const expected = scriptCritiqueSourcePrimaryLanguage(sourceLanguage);
-  const fields = [
-    ...critique.strengths.map((text, index) => ({ field: `strengths[${index}]`, text })),
-    ...critique.issues.flatMap((issue, index) => [
-      { field: `issues[${index}].issue`, text: issue.issue },
-      { field: `issues[${index}].recommendation`, text: issue.recommendation },
-    ]),
-  ];
   const corpus = fields.map(({ text }) => text).join(' ');
   const findings = fields.map(({ field, text }): CritiqueLanguageFinding => {
     const detected = detect(text);
@@ -122,5 +115,21 @@ export function critiqueLanguageFindings(
     ];
   return findings.filter(
     (finding) => finding.detected !== 'unknown' && finding.detected !== expected,
+  );
+}
+
+export function critiqueLanguageFindings(
+  critique: Critique,
+  sourceLanguage: string,
+): CritiqueLanguageFinding[] {
+  return editorialLanguageFindings(
+    [
+      ...critique.strengths.map((text, index) => ({ field: `strengths[${index}]`, text })),
+      ...critique.issues.flatMap((issue, index) => [
+        { field: `issues[${index}].issue`, text: issue.issue },
+        { field: `issues[${index}].recommendation`, text: issue.recommendation },
+      ]),
+    ],
+    sourceLanguage,
   );
 }
