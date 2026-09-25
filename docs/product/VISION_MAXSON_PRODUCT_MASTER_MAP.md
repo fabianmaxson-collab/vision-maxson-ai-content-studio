@@ -1,8 +1,8 @@
 # Vision Maxson AI Content Studio — Product Master Map
 
-**Status:** CANONICAL PRODUCT AUTHORITY  
-**Language:** Spanish-first  
-**Scope:** Product structure, end-to-end system functionality, menu ownership, user-facing responsibilities  
+**Status:** CANONICAL PRODUCT AUTHORITY
+**Language:** Spanish-first
+**Scope:** Product structure, end-to-end system functionality, menu ownership, user-facing responsibilities
 **Applies to:** All frontend, product, agent, UX, workflow, documentation, and implementation changes
 
 ---
@@ -70,6 +70,7 @@ Do not add global menu items for Guion, Storyboard, Voces, Assets, Monetización
 Purpose: executive command center.
 
 It answers:
+
 - What is active?
 - What is in progress?
 - What needs attention?
@@ -79,6 +80,7 @@ It answers:
 - What is the current AI cost/usage picture?
 
 Typical content:
+
 - active projects;
 - productions this month;
 - publications;
@@ -138,6 +140,7 @@ These are project-level functions, not global navigation items.
 Finanzas contains the operational economics of Vision Maxson AI Content Studio.
 
 It may include internal tabs, cards, filters, and views for:
+
 - gross income;
 - expenses;
 - AI/provider costs;
@@ -163,6 +166,7 @@ Actualidades is the studio radar.
 It consolidates information that can affect operations, content opportunities, cost, provider choices, publishing, or strategy.
 
 Internal filters/views may cover:
+
 - AI news;
 - tool/provider updates;
 - API/platform changes;
@@ -182,6 +186,7 @@ The system should analyze relevance rather than merely display a generic news fe
 Cuentas groups identity, brands, destinations, and connected social/channel profiles.
 
 Internal views may include:
+
 - Marcas;
 - Canales;
 - Cuentas sociales;
@@ -223,6 +228,7 @@ INTELIGENCIA IA
 ```
 
 ### Chat
+
 - user messages appear on the left;
 - Vision Maxson responses appear opposite;
 - every textual response can be played with voice;
@@ -235,6 +241,7 @@ The system listens, understands context, responds by voice, and can prepare or e
 
 ### Background intelligence
 While the user talks or writes, the system may:
+
 1. detect intent;
 2. retrieve relevant context;
 3. inspect project/system data;
@@ -252,6 +259,7 @@ The user does not need to see which internal model performed each step.
 Analíticas is the performance intelligence layer.
 
 It may include:
+
 - views;
 - watch time;
 - engagement;
@@ -299,6 +307,7 @@ PUBLISHING
 Contains masters that have passed the necessary project/QA gates and are ready for publication review.
 
 Typical checks:
+
 - title;
 - description;
 - thumbnail;
@@ -313,6 +322,7 @@ Typical checks:
 Calendar and multi-channel scheduling.
 
 It can support:
+
 - schedule creation;
 - rescheduling;
 - conflict detection;
@@ -327,6 +337,7 @@ It can support:
 Integraciones contains the external tools and services available to Vision Maxson.
 
 Examples:
+
 - Agnes;
 - OpenAI;
 - Gemini / Google;
@@ -355,6 +366,7 @@ Descargas is a simple retrieval interface for generated outputs.
 It is not the general storage architecture.
 
 The user can search by:
+
 - filename;
 - video;
 - image;
@@ -362,6 +374,7 @@ The user can search by:
 - project.
 
 Primary use cases:
+
 - final masters;
 - approved clips;
 - images;
@@ -393,6 +406,7 @@ CONFIGURACIÓN
 
 ### Estado del sistema / System Check
 Can show health of:
+
 - core platform;
 - AI processing;
 - database;
@@ -403,6 +417,7 @@ Can show health of:
 
 ### Actualizaciones
 Can show:
+
 - current version;
 - release notes;
 - fixes;
@@ -523,6 +538,7 @@ If unclear, stop and ask rather than invent.
 ## 17. Privacy Invariants
 
 The final Vision Maxson UI must not show:
+
 - owner real name;
 - owner personal email;
 - owner personal photo/avatar.
@@ -534,6 +550,7 @@ These may exist internally where technically necessary for authentication/securi
 ## 18. Change Control
 
 Any change to:
+
 - the 11-item global navigation;
 - project-level ownership of Guion/Storyboard/Voces/etc.;
 - Publishing submenu structure;
