@@ -312,7 +312,12 @@ Canonical production control behavior:
 - before a generation that can incur provider cost, show recommended parameters, an option to change parameters, and a provider-aware estimated cost;
 - display cost at useful operational levels: generation/attempt, scene, project, and remaining budget where available;
 - budget governance supports limits by project, channel, provider, and month;
-- budget alerts are triggered at 70%, 90%, and 100% of the applicable limit;
+- project-spend alerts and provider-credit health are separate concepts;
+- project-spend alerts are triggered at 70%, 90%, and 100% of the applicable budget limit;
+- provider credit/usage health should show a remaining-credit bar and semantic status (healthy/green → caution/orange → critical/red) when the provider exposes usable balance/usage data;
+- before project execution, show a forecast range (minimum / expected / worst-case) for expected provider usage and cost, based on planned scenes, durations, provider routing, voice/audio requirements, and allowed regenerations;
+- the initial provisional hard ceiling for a Short is €3.00 per finished short unless the owner overrides it; Intelligence should normally aim materially below this ceiling when quality can be preserved;
+- long-form content should use a duration-aware/project-specific ceiling rather than reusing the Short ceiling; its exact default is to be calibrated from real production data before being locked;
 - Assisted behavior is the default operating posture for early production workflows;
 - human approval is required for material/important spend, regenerations outside configured policy, and other critical actions;
 - up to 2 automatic regenerations may occur within the authorized policy; beyond that, human approval is required;
