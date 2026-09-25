@@ -2,7 +2,7 @@
 
 **Status:** CANONICAL PRODUCT AUTHORITY
 
-**Language:** Spanish-first
+**Language:** Spanish-fixed UI; project content may operate in Spanish, German, or English
 
 **Scope:** Product structure, end-to-end system functionality, menu ownership, user-facing responsibilities
 
@@ -112,6 +112,16 @@ Resumen
 ```
 
 These are project-level functions, not global navigation items.
+
+### Project language behavior
+
+The Vision Maxson interface remains in Spanish. Channel/project production may operate natively in Spanish, German, or English. The canonical source language of scripts, voice, assets, captions, and publishing material follows the project/channel configuration.
+
+When source content is German or English, the owner must have an optional translate-to-Spanish control for comprehension. For audio/video review, a Spanish listening/translation aid may be generated for review without replacing the canonical source-language media.
+
+### Project progression UI
+
+The project workspace should expose an editor-like visual progression/timeline for the production lifecycle, complemented by tabs/views for the detailed modules. This is a production-control timeline, not a requirement to reproduce a full Premiere-style nonlinear editor in V1.
 
 ---
 
@@ -388,7 +398,33 @@ INICIO = executive summary of everything
 
 ---
 
-## 16. Product Authority Hierarchy
+## 16. Production Governance Defaults
+
+Current confirmed production-governance rules:
+
+- provider behavior supports `Auto / Prefer / Locked`;
+- routing must actively exploit high-quality zero-marginal-cost or included-quota capabilities when available, including Google voice/audio/SFX generation where the connected plan/API makes them available, without lowering quality or violating rights/continuity requirements;
+- before generation, Vision Maxson shows recommended parameters, allows parameter changes, and presents provider-aware estimated cost;
+- cost visibility should support generation/attempt, scene, project, and remaining budget;
+- budget controls exist per project, channel, provider, and month;
+- project budget consumption and provider credit/balance health are distinct monitoring layers;
+- project budget alert thresholds are 70%, 90%, and 100%;
+- provider integrations should expose remaining credit/usage health when the provider API/account data makes it available, using a green → orange → red status progression;
+- before execution, Vision Maxson should calculate a forecast range (minimum / expected / worst-case) from planned scene count, clip durations, candidate providers/models, voice/audio requirements, expected retries/regenerations, and current provider pricing/capacity data;
+- provisional Short ceiling: €3.00 maximum per completed Short by default, with Intelligence expected to optimize below it whenever quality and continuity remain acceptable;
+- Provider Intelligence must track which capabilities are free, included in quota, metered, trial-limited, or paid, and prefer free/included capacity when quality is equivalent or better;
+- long-form budgets are duration-aware and project-specific; the default ceiling must be calibrated from real production results before being locked;
+- Assisted is the default posture for early production workflows;
+- human approval is required for important spend, regenerations outside configured limits, and other critical actions;
+- no more than 2 automatic regenerations may occur within policy before human approval is required;
+- technical retry does not create a new creative Take;
+- creative regeneration creates a new Take and preserves prior Takes.
+
+No absolute EUR ceiling is canonical until explicitly approved.
+
+---
+
+## 17. Product Authority Hierarchy
 
 When implementation, mockups, agent suggestions, or existing code conflict, use this order:
 
@@ -407,14 +443,16 @@ If unclear, stop and ask rather than invent.
 
 ---
 
-## 17. Privacy Invariants
+## 18. Privacy Invariants
 
-The final Vision Maxson UI must not show the owner real name, personal email, or personal photo/avatar.
+The normal Vision Maxson UI must not show the owner real name, personal email, or personal photo/avatar.
 
-These may exist internally where technically necessary for authentication/security, but are not normal UI content.
+These may exist internally where technically necessary for authentication/security and may appear in protected administrative/security contexts when required.
+
+Downloaded PDFs, exports, invoices, reports, legal documents, and other generated files may contain owner/personal/legal identity when required by their purpose or explicitly requested. The privacy invariant is primarily a normal-interface visibility rule, including protection against casual shoulder-surfing.
 
 ---
 
-## 18. Change Control
+## 19. Change Control
 
 Any change to the 11-item global navigation, project-level ownership of Guion/Storyboard/Voces/etc., Publishing submenu structure, Intelligence AI behavior, owner privacy, primary interface language, or canonical visual identity requires explicit owner approval before implementation.

@@ -31,10 +31,12 @@ Canonical characteristics:
 - responsive implementation for tablet/mobile;
 - official Vision Maxson logo visible;
 - global search field at the top;
-- Spanish primary UI;
-- no owner name;
-- no owner email;
-- no owner personal photo/avatar.
+- Spanish is the fixed owner-facing interface language; a general UI language switcher is not required;
+- project/channel content may be authored and processed in Spanish, German, or English according to the channel/project language;
+- when project content is not Spanish, provide an optional owner-facing translate-to-Spanish control for text and, where audio exists, a Spanish listening/translation aid without changing the canonical source language;
+- no owner name in normal UI;
+- no owner email in normal UI;
+- no owner personal photo/avatar in normal UI.
 
 Do not introduce unrelated visual identities, white SaaS themes, random brands, random product names, or different navigation styles.
 
@@ -124,6 +126,8 @@ Approved direction:
 - selected-project summary panel;
 - project-specific navigation visible only once a project is opened.
 
+Project workspace should provide a professional editor-like production progression view. A visual timeline/pipeline is preferred for understanding where the project is in the lifecycle, with project tabs/views below or alongside it when that improves clarity. Exact layout may adapt responsively without turning the project page into a full nonlinear video editor.
+
 Project workspace may expose internal modules such as:
 
 - Resumen;
@@ -191,7 +195,7 @@ Approved direction:
 - permissions/roles if needed;
 - sync state/activity.
 
-Do not expose owner personal identity.
+Do not expose owner personal identity in normal account/channel UI.
 
 ---
 
@@ -298,7 +302,34 @@ Forbidden:
 
 ---
 
-## 15. Configuración
+## 15. Production Controls
+
+Inside project-level generation/production workflows, provider and cost controls may be exposed intentionally even though normal `Inteligencia IA` hides foundation-model routing.
+
+Canonical production control behavior:
+
+- provider selection supports governed `Auto / Prefer / Locked` behavior;
+- provider routing must consider zero-marginal-cost / included-quota capabilities when available (for example, Google-provided voice or sound/SFX generation covered by the connected plan), but only when they satisfy the required professional quality, language, rights, continuity, and latency constraints;
+- before a generation that can incur provider cost, show recommended parameters, an option to change parameters, and a provider-aware estimated cost;
+- display cost at useful operational levels: generation/attempt, scene, project, and remaining budget where available;
+- budget governance supports limits by project, channel, provider, and month;
+- project-spend alerts and provider-credit health are separate concepts;
+- project-spend alerts are triggered at 70%, 90%, and 100% of the applicable budget limit;
+- provider credit/usage health should show a remaining-credit bar and semantic status (healthy/green → caution/orange → critical/red) when the provider exposes usable balance/usage data;
+- before project execution, show a forecast range (minimum / expected / worst-case) for expected provider usage and cost, based on planned scenes, durations, provider routing, voice/audio requirements, and allowed regenerations;
+- the initial provisional hard ceiling for a Short is €3.00 per finished short unless the owner overrides it; Intelligence should normally aim materially below this ceiling when quality can be preserved;
+- long-form content should use a duration-aware/project-specific ceiling rather than reusing the Short ceiling; its exact default is to be calibrated from real production data before being locked;
+- Assisted behavior is the default operating posture for early production workflows;
+- human approval is required for material/important spend, regenerations outside configured policy, and other critical actions;
+- up to 2 automatic regenerations may occur within the authorized policy; beyond that, human approval is required;
+- technical retry is not a creative regeneration and does not create a new Take;
+- creative regeneration creates a new Take while preserving previous Takes.
+
+Exact monetary ceilings in EUR are not canonical until explicitly approved.
+
+---
+
+## 16. Configuración
 
 Approved direction:
 
@@ -317,7 +348,7 @@ Canonical tabs:
 
 ---
 
-## 16. Data Realism Rule
+## 17. Data Realism Rule
 
 Mockup data is illustrative.
 
@@ -330,7 +361,7 @@ Frontend implementation must:
 
 ---
 
-## 17. Agent UI Change Rule
+## 18. Agent UI Change Rule
 
 Before any frontend/product/navigation change, the implementing agent must read:
 
@@ -340,3 +371,13 @@ Before any frontend/product/navigation change, the implementing agent must read:
 If a requested change conflicts with these documents, do not silently implement it.
 
 Explicit owner approval is required for intentional canon changes.
+
+
+## 19. Privacy Scope
+
+The privacy requirement is primarily a shoulder-surfing / normal-interface rule:
+
+- do not show the owner's real name, personal email, or personal photo/avatar in normal Vision Maxson UI;
+- protected authentication/security/admin contexts may show identity data only where operationally necessary;
+- downloaded PDFs, exports, invoices, reports, legal documents, or other generated files may include owner/personal/legal identity when required by the document purpose or explicitly requested;
+- audit/security records may retain identity data where needed for accountability and access control, but normal dashboards should not surface it casually.
