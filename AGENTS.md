@@ -31,3 +31,20 @@ Authority order:
 6. Agent proposal.
 
 If uncertain, stop and ask rather than invent.
+
+
+## Platform intelligence guardrails
+
+Before changing platform-specific publishing, monetization optimization, trend discovery, ranking/compilation workflows, source-clip ingestion, or platform duration rules, read:
+
+- `docs/product/VISION_MAXSON_PLATFORM_INTELLIGENCE.md`
+
+Mandatory rules:
+
+1. Platform policies must be treated as dynamic, versioned rules sourced preferentially from official platform documentation.
+2. Do not apply one platform's monetization thresholds to another platform.
+3. Optimize for eligibility and performance within platform rules; do not design policy circumvention.
+4. Watermark-free does not mean rights-free.
+5. Ranking/compilation workflows require original editorial value and source/rights tracking.
+6. Preserve the API-first + OAuth + manual bridge fallback for source intake.
+7. Do not silently hard-code a platform rule without source/effective-date context.
