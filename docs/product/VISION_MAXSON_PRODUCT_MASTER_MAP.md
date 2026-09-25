@@ -403,6 +403,7 @@ INICIO = executive summary of everything
 Current confirmed production-governance rules:
 
 - provider behavior supports `Auto / Prefer / Locked`;
+- routing must actively exploit high-quality zero-marginal-cost or included-quota capabilities when available, including Google voice/audio/SFX generation where the connected plan/API makes them available, without lowering quality or violating rights/continuity requirements;
 - before generation, Vision Maxson shows recommended parameters, allows parameter changes, and presents provider-aware estimated cost;
 - cost visibility should support generation/attempt, scene, project, and remaining budget;
 - budget controls exist per project, channel, provider, and month;
@@ -411,6 +412,7 @@ Current confirmed production-governance rules:
 - provider integrations should expose remaining credit/usage health when the provider API/account data makes it available, using a green → orange → red status progression;
 - before execution, Vision Maxson should calculate a forecast range (minimum / expected / worst-case) from planned scene count, clip durations, candidate providers/models, voice/audio requirements, expected retries/regenerations, and current provider pricing/capacity data;
 - provisional Short ceiling: €3.00 maximum per completed Short by default, with Intelligence expected to optimize below it whenever quality and continuity remain acceptable;
+- Provider Intelligence must track which capabilities are free, included in quota, metered, trial-limited, or paid, and prefer free/included capacity when quality is equivalent or better;
 - long-form budgets are duration-aware and project-specific; the default ceiling must be calibrated from real production results before being locked;
 - Assisted is the default posture for early production workflows;
 - human approval is required for important spend, regenerations outside configured limits, and other critical actions;
