@@ -309,6 +309,7 @@ Inside project-level generation/production workflows, provider and cost controls
 Canonical production control behavior:
 
 - provider selection supports governed `Auto / Prefer / Locked` behavior;
+- provider routing must consider zero-marginal-cost / included-quota capabilities when available (for example, Google-provided voice or sound/SFX generation covered by the connected plan), but only when they satisfy the required professional quality, language, rights, continuity, and latency constraints;
 - before a generation that can incur provider cost, show recommended parameters, an option to change parameters, and a provider-aware estimated cost;
 - display cost at useful operational levels: generation/attempt, scene, project, and remaining budget where available;
 - budget governance supports limits by project, channel, provider, and month;
