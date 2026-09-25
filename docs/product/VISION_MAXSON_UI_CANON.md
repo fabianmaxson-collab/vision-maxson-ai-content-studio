@@ -1,6 +1,6 @@
 # Vision Maxson AI Content Studio — UI Canon
 
-**Status:** CANONICAL UI / UX AUTHORITY  
+**Status:** CANONICAL UI / UX AUTHORITY
 **Relationship:** Companion to `VISION_MAXSON_PRODUCT_MASTER_MAP.md`
 
 ---
@@ -18,6 +18,7 @@ Agents must preserve the approved structure and visual language instead of inven
 ## 2. Global Visual Language
 
 Canonical characteristics:
+
 - dark navy / deep blue base;
 - restrained black/navy surfaces;
 - gold accent for premium emphasis and active navigation;
@@ -58,12 +59,14 @@ Configuración
 ```
 
 Publishing may expand to:
+
 - Listo para publicar
 - Scheduler
 
 Other feature groups remain internal page tabs/views, not new global sidebar items.
 
 Configuration internal tabs:
+
 - General
 - Idioma y apariencia
 - Permisos y seguridad
@@ -76,6 +79,7 @@ Configuration internal tabs:
 ## 4. Global Header
 
 Expected:
+
 - global search input;
 - optional keyboard shortcut hint;
 - theme/display control;
@@ -84,6 +88,7 @@ Expected:
 - product slogan/accent text where appropriate.
 
 Forbidden:
+
 - owner real name;
 - owner email;
 - owner photo;
@@ -96,6 +101,7 @@ Search should be able to locate relevant entities such as projects, assets, down
 ## 5. Inicio
 
 Approved direction:
+
 - executive summary;
 - KPI cards;
 - system health;
@@ -112,12 +118,14 @@ No personal greeting using owner identity.
 ## 6. Proyectos
 
 Approved direction:
+
 - project list/selector;
 - progress/status;
 - selected-project summary panel;
 - project-specific navigation visible only once a project is opened.
 
 Project workspace may expose internal modules such as:
+
 - Resumen;
 - Research;
 - Brief;
@@ -143,6 +151,7 @@ Do not move these into the global sidebar.
 ## 7. Finanzas
 
 Approved direction:
+
 - gross income;
 - expenses;
 - estimated taxes;
@@ -159,6 +168,7 @@ Use Google Sheets where spreadsheet integration is shown. Do not show Notion.
 ## 8. Actualidades
 
 Approved direction:
+
 - feed of relevant updates;
 - system/tool/AI/platform categories;
 - priorities;
@@ -173,6 +183,7 @@ Internal filters are preferred over sidebar expansion.
 ## 9. Cuentas
 
 Approved direction:
+
 - brands;
 - connected channels;
 - social accounts;
@@ -187,6 +198,7 @@ Do not expose owner personal identity.
 ## 10. Inteligencia IA
 
 Approved Chat-tab direction:
+
 - user messages on the LEFT;
 - Vision Maxson AI responses on the opposite side;
 - every AI text response can be played with voice;
@@ -203,6 +215,7 @@ Do not show user-facing provider/model pickers as part of normal Intelligence UI
 ## 11. Analíticas
 
 Approved direction:
+
 - global performance KPIs;
 - evolution charts;
 - platform performance;
@@ -217,6 +230,7 @@ Approved direction:
 ## 12. Publishing
 
 Approved parent view:
+
 - publishing queue;
 - distribution by platform;
 - scheduler preview;
@@ -224,10 +238,12 @@ Approved parent view:
 - AI recommendations.
 
 Only two canonical submenus:
+
 - Listo para publicar
 - Scheduler
 
 ### Listo para publicar
+
 - content table;
 - platform/filter controls;
 - checklist;
@@ -235,6 +251,7 @@ Only two canonical submenus:
 - distribution summary.
 
 ### Scheduler
+
 - weekly/monthly/list views;
 - platform filters;
 - schedule grid;
@@ -248,6 +265,7 @@ Only two canonical submenus:
 ## 13. Integraciones
 
 Approved direction:
+
 - connected tools/providers;
 - status;
 - synchronization;
@@ -264,6 +282,7 @@ Do not expose secrets or raw API keys.
 ## 14. Descargas
 
 Approved direction:
+
 - search files, final videos, or projects;
 - filter by type;
 - selectable rows;
@@ -272,6 +291,7 @@ Approved direction:
 - focus on final masters and approved outputs.
 
 Forbidden:
+
 - “Nueva descarga” button;
 - owner personal identity;
 - unrelated upload/product-management features.
@@ -281,11 +301,13 @@ Forbidden:
 ## 15. Configuración
 
 Approved direction:
+
 - compact internal tabs;
 - administrative/technical settings;
 - no duplication of other global sections.
 
 Canonical tabs:
+
 - General
 - Idioma y apariencia
 - Permisos y seguridad
@@ -300,6 +322,7 @@ Canonical tabs:
 Mockup data is illustrative.
 
 Frontend implementation must:
+
 - bind to real system data where available;
 - use explicit placeholders/skeletons where data is unavailable;
 - never promote invented mockup values into production truth;
