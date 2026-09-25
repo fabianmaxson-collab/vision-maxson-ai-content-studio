@@ -159,3 +159,5 @@ export class AIExecutionGateway {
     throw lastError ?? new ProviderError('PERMANENT', false, 'Provider execution failed.');
   }
 }
+
+export * from './video';

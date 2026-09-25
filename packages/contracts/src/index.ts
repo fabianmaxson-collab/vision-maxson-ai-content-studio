@@ -2,6 +2,9 @@ import { z } from 'zod';
 export * from './product';
 export * from './editorial';
 export * from './providers';
+export * from './scene-production-plan';
+export * from './media-asset';
+export * from './video-provider';
 
 export const settingValueSchema = z.union([
   z.string().max(4096),
