@@ -406,7 +406,12 @@ Current confirmed production-governance rules:
 - before generation, Vision Maxson shows recommended parameters, allows parameter changes, and presents provider-aware estimated cost;
 - cost visibility should support generation/attempt, scene, project, and remaining budget;
 - budget controls exist per project, channel, provider, and month;
-- alert thresholds are 70%, 90%, and 100%;
+- project budget consumption and provider credit/balance health are distinct monitoring layers;
+- project budget alert thresholds are 70%, 90%, and 100%;
+- provider integrations should expose remaining credit/usage health when the provider API/account data makes it available, using a green → orange → red status progression;
+- before execution, Vision Maxson should calculate a forecast range (minimum / expected / worst-case) from planned scene count, clip durations, candidate providers/models, voice/audio requirements, expected retries/regenerations, and current provider pricing/capacity data;
+- provisional Short ceiling: €3.00 maximum per completed Short by default, with Intelligence expected to optimize below it whenever quality and continuity remain acceptable;
+- long-form budgets are duration-aware and project-specific; the default ceiling must be calibrated from real production results before being locked;
 - Assisted is the default posture for early production workflows;
 - human approval is required for important spend, regenerations outside configured limits, and other critical actions;
 - no more than 2 automatic regenerations may occur within policy before human approval is required;
