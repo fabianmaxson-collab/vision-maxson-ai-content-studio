@@ -8,6 +8,7 @@ Before changing product structure, navigation, frontend information architecture
 These documents are canonical product/UI authority.
 
 Mandatory rules:
+
 1. Do not invent new global sidebar sections.
 2. Keep the canonical 11-item navigation stable.
 3. Guion, Storyboard, Voces, Assets, Generación, QA, etc. belong inside Projects.
@@ -21,6 +22,7 @@ Mandatory rules:
 11. If the owner explicitly approves a canon change, update the canonical docs in the same change set.
 
 Authority order:
+
 1. Explicit owner-confirmed decision.
 2. Product Master Map.
 3. UI Canon.
