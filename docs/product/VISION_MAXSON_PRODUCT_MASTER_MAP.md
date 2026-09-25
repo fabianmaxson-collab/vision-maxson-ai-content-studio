@@ -1,8 +1,11 @@
 # Vision Maxson AI Content Studio — Product Master Map
 
 **Status:** CANONICAL PRODUCT AUTHORITY
+
 **Language:** Spanish-first
+
 **Scope:** Product structure, end-to-end system functionality, menu ownership, user-facing responsibilities
+
 **Applies to:** All frontend, product, agent, UX, workflow, documentation, and implementation changes
 
 ---
@@ -61,36 +64,15 @@ DESCARGAS
 CONFIGURACIÓN
 ```
 
-Do not add global menu items for Guion, Storyboard, Voces, Assets, Monetización, etc. Those functions belong inside the appropriate domain, primarily inside Projects.
+Do not add global menu items for Guion, Storyboard, Voces, Assets, Monetización, or other project-level functions. Those functions belong inside the appropriate domain, primarily inside Projects.
 
 ---
 
 ## 3. Inicio
 
-Purpose: executive command center.
+Inicio is the executive command center. It answers what is active, what is in progress, what needs attention, what is performing well, what is scheduled next, whether the system is healthy, and what the current AI cost/usage picture looks like.
 
-It answers:
-
-- What is active?
-- What is in progress?
-- What needs attention?
-- What is performing well?
-- What is scheduled next?
-- Is the system healthy?
-- What is the current AI cost/usage picture?
-
-Typical content:
-
-- active projects;
-- productions this month;
-- publications;
-- general performance;
-- AI costs;
-- system health;
-- relevant system activity;
-- recent projects;
-- upcoming publications;
-- high-priority alerts.
+Typical content includes active projects, productions this month, publications, general performance, AI costs, system health, relevant system activity, recent projects, upcoming publications, and high-priority alerts.
 
 Inicio is a summary, not the place where every function is executed.
 
@@ -100,9 +82,7 @@ Inicio is a summary, not the place where every function is executed.
 
 This is where the real content-production work lives.
 
-The global Projects page lists projects, their state, progress, type, recent activity, and current phase.
-
-Once a project is opened, the user enters a project workspace.
+The global Projects page lists projects, their state, progress, type, recent activity, and current phase. Once a project is opened, the user enters a project workspace.
 
 Canonical internal project flow:
 
@@ -139,19 +119,7 @@ These are project-level functions, not global navigation items.
 
 Finanzas contains the operational economics of Vision Maxson AI Content Studio.
 
-It may include internal tabs, cards, filters, and views for:
-
-- gross income;
-- expenses;
-- AI/provider costs;
-- cost per project;
-- cost per asset/video;
-- estimated taxes;
-- net benefit;
-- evolution over time;
-- forecasts;
-- source/platform breakdowns;
-- Google Sheets synchronization where useful.
+Its internal views may cover gross income, expenses, AI/provider costs, cost per project, cost per asset/video, estimated taxes, net benefit, evolution over time, forecasts, source/platform breakdowns, and Google Sheets synchronization where useful.
 
 There is no standalone global “Monetization Strategy” menu. Monetization optimization is handled by the Intelligence layer using financial and analytics data.
 
@@ -165,17 +133,7 @@ Actualidades is the studio radar.
 
 It consolidates information that can affect operations, content opportunities, cost, provider choices, publishing, or strategy.
 
-Internal filters/views may cover:
-
-- AI news;
-- tool/provider updates;
-- API/platform changes;
-- system alerts;
-- opportunities;
-- market/content trends;
-- reminders.
-
-These are filters inside Actualidades, not additional global menu entries.
+Internal filters may cover AI news, tool/provider updates, API/platform changes, system alerts, opportunities, market/content trends, and reminders. These remain filters inside Actualidades, not additional global menu entries.
 
 The system should analyze relevance rather than merely display a generic news feed.
 
@@ -185,16 +143,7 @@ The system should analyze relevance rather than merely display a generic news fe
 
 Cuentas groups identity, brands, destinations, and connected social/channel profiles.
 
-Internal views may include:
-
-- Marcas;
-- Canales;
-- Cuentas sociales;
-- Brand identity;
-- Channel rules;
-- Languages;
-- Audiences;
-- permissions and roles associated with brands/channels.
+Internal views may include Marcas, Canales, Cuentas sociales, brand identity, channel rules, languages, audiences, and permissions/roles associated with brands and channels.
 
 Example hierarchy:
 
@@ -213,9 +162,7 @@ Marca
 
 Inteligencia IA is the brain of Vision Maxson.
 
-The user interacts with Vision Maxson itself, not with a visible list of underlying foundation models.
-
-The system may internally use ChatGPT/OpenAI, Gemini, Claude, Agnes, or future providers, but model routing is internal.
+The user interacts with Vision Maxson itself, not with a visible list of underlying foundation models. The system may internally use ChatGPT/OpenAI, Gemini, Claude, Agnes, or future providers, but model routing is internal.
 
 Canonical user-facing modes:
 
@@ -229,26 +176,17 @@ INTELIGENCIA IA
 
 ### Chat
 
-- user messages appear on the left;
-- Vision Maxson responses appear opposite;
-- every textual response can be played with voice;
-- chat can access relevant system/project context according to permissions.
+User messages appear on the left. Vision Maxson responses appear on the opposite side. Every textual response can be played with voice. Chat can access relevant system/project context according to permissions.
 
 ### Voice
-A visible **“Iniciar voz”** action starts a live voice conversation similar in interaction concept to ChatGPT Voice / Gemini Live.
+
+A visible **“Iniciar voz”** action starts a live voice conversation similar in interaction concept to ChatGPT Voice or Gemini Live.
 
 The system listens, understands context, responds by voice, and can prepare or execute authorized actions.
 
 ### Background intelligence
-While the user talks or writes, the system may:
 
-1. detect intent;
-2. retrieve relevant context;
-3. inspect project/system data;
-4. select internal capabilities/models;
-5. plan;
-6. respond or act;
-7. record/audit permitted actions.
+While the user talks or writes, the system may detect intent, retrieve relevant context, inspect project/system data, select internal capabilities/models, plan, respond or act, and record/audit permitted actions.
 
 The user does not need to see which internal model performed each step.
 
@@ -258,20 +196,7 @@ The user does not need to see which internal model performed each step.
 
 Analíticas is the performance intelligence layer.
 
-It may include:
-
-- views;
-- watch time;
-- engagement;
-- conversion;
-- growth;
-- platform performance;
-- channel performance;
-- audience;
-- top content;
-- publishing windows;
-- historical patterns;
-- AI-generated insights.
+It may include views, watch time, engagement, conversion, growth, platform performance, channel performance, audience, top content, publishing windows, historical patterns, and AI-generated insights.
 
 The purpose is not only reporting. Analytics feed back into future decisions.
 
@@ -304,31 +229,16 @@ PUBLISHING
 ```
 
 ### Listo para publicar
+
 Contains masters that have passed the necessary project/QA gates and are ready for publication review.
 
-Typical checks:
-
-- title;
-- description;
-- thumbnail;
-- captions;
-- CTA;
-- hashtags;
-- target account/platform;
-- format;
-- policy/compliance status.
+Typical checks include title, description, thumbnail, captions, CTA, hashtags, target account/platform, format, and policy/compliance status.
 
 ### Scheduler
+
 Calendar and multi-channel scheduling.
 
-It can support:
-
-- schedule creation;
-- rescheduling;
-- conflict detection;
-- recommended publishing windows;
-- automated publishing;
-- platform/channel visibility.
+It can support schedule creation, rescheduling, conflict detection, recommended publishing windows, automated publishing, and platform/channel visibility.
 
 ---
 
@@ -336,20 +246,7 @@ It can support:
 
 Integraciones contains the external tools and services available to Vision Maxson.
 
-Examples:
-
-- Agnes;
-- OpenAI;
-- Gemini / Google;
-- Google Flow;
-- ElevenLabs;
-- Cloudflare;
-- Google Drive;
-- Google Sheets;
-- YouTube;
-- TikTok;
-- Instagram / Meta;
-- future providers.
+Examples include Agnes, OpenAI, Gemini/Google, Google Flow, ElevenLabs, Cloudflare, Google Drive, Google Sheets, YouTube, TikTok, Instagram/Meta, and future providers.
 
 Key principle:
 
@@ -361,26 +258,11 @@ Do not create one global sidebar item per provider.
 
 ## 12. Descargas
 
-Descargas is a simple retrieval interface for generated outputs.
+Descargas is a simple retrieval interface for generated outputs. It is not the general storage architecture.
 
-It is not the general storage architecture.
+The user can search by filename, video, image, document, or project.
 
-The user can search by:
-
-- filename;
-- video;
-- image;
-- document;
-- project.
-
-Primary use cases:
-
-- final masters;
-- approved clips;
-- images;
-- documents;
-- audio;
-- ZIP/export packages.
+Primary use cases include final masters, approved clips, images, documents, audio, and ZIP/export packages.
 
 No “Nueva descarga” action is required. Files are selected and downloaded.
 
@@ -405,24 +287,12 @@ CONFIGURACIÓN
 ```
 
 ### Estado del sistema / System Check
-Can show health of:
 
-- core platform;
-- AI processing;
-- database;
-- storage;
-- rendering;
-- APIs/integrations;
-- background jobs.
+This can show health of the core platform, AI processing, database, storage, rendering, APIs/integrations, and background jobs.
 
 ### Actualizaciones
-Can show:
 
-- current version;
-- release notes;
-- fixes;
-- new features;
-- available updates.
+This can show the current version, release notes, fixes, new features, and available updates.
 
 These remain internal tabs, not required global sidebar entries.
 
@@ -522,12 +392,14 @@ INICIO = executive summary of everything
 
 When implementation, mockups, agent suggestions, or existing code conflict, use this order:
 
+```text
 1. Explicit owner-confirmed decisions.
 2. This Product Master Map.
-3. `VISION_MAXSON_UI_CANON.md`.
+3. VISION_MAXSON_UI_CANON.md.
 4. Master Specification / accepted ADRs.
 5. Existing implementation.
 6. Agent proposals.
+```
 
 Lower levels must not silently override higher levels.
 
@@ -537,11 +409,7 @@ If unclear, stop and ask rather than invent.
 
 ## 17. Privacy Invariants
 
-The final Vision Maxson UI must not show:
-
-- owner real name;
-- owner personal email;
-- owner personal photo/avatar.
+The final Vision Maxson UI must not show the owner real name, personal email, or personal photo/avatar.
 
 These may exist internally where technically necessary for authentication/security, but are not normal UI content.
 
@@ -549,14 +417,4 @@ These may exist internally where technically necessary for authentication/securi
 
 ## 18. Change Control
 
-Any change to:
-
-- the 11-item global navigation;
-- project-level ownership of Guion/Storyboard/Voces/etc.;
-- Publishing submenu structure;
-- Intelligence AI behavior;
-- owner privacy;
-- primary interface language;
-- canonical visual identity;
-
-requires explicit owner approval before implementation.
+Any change to the 11-item global navigation, project-level ownership of Guion/Storyboard/Voces/etc., Publishing submenu structure, Intelligence AI behavior, owner privacy, primary interface language, or canonical visual identity requires explicit owner approval before implementation.
