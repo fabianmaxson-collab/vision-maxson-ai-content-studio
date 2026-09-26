@@ -340,3 +340,32 @@ Before any frontend/product/navigation change, the implementing agent must read:
 If a requested change conflicts with these documents, do not silently implement it.
 
 Explicit owner approval is required for intentional canon changes.
+
+---
+
+## 18. Approved Visual Reference Set
+
+The 13 images archived in `docs/product/ui-reference/` are the owner-approved visual references for Vision Maxson AI Content Studio:
+
+- **Pre-Implementation Requirement:** They must be inspected before any material frontend redesign or new page implementation.
+- **Visual Guidance Scope:** They guide overall composition, information density, visual hierarchy, styling, and component language.
+- **Non-Pixel-Identical:** Final implementation does not need to be pixel-identical; responsive adaptation, accessibility standards, and runtime performance constraints may refine exact layout details.
+- **Authority Order:** The written Product Master Map and UI Canon hold strictly higher authority than screenshot details. Any conflict between screenshot graphics and written canon is resolved in favor of the written canon.
+- **Mock Data Is Non-Production:** All metrics, costs, dates, storage numbers, project names, and alerts displayed in the screenshots are illustrative mockups and must never be converted into runtime truth.
+- **No Navigation Drift:** The canonical 11-item sidebar navigation remains strictly unchanged. No new global sidebar items may be inferred from screenshot contents.
+
+| Reference                    | Product Area                             | Status                    |
+| :--------------------------- | :--------------------------------------- | :------------------------ |
+| `01-inicio.jpg`              | Inicio / Executive Command Center        | Approved Visual Reference |
+| `02-proyectos.jpg`           | Proyectos / Workspace & Overview         | Approved Visual Reference |
+| `03-finanzas.jpg`            | Finanzas / Expenditures & Margins        | Approved Visual Reference |
+| `04-actualidades.jpg`        | Actualidades / Platform Intelligence     | Approved Visual Reference |
+| `05-cuentas.jpg`             | Cuentas / Brands, Channels & Roles       | Approved Visual Reference |
+| `06-inteligencia-ia.jpg`     | Inteligencia IA / Conversational Console | Approved Visual Reference |
+| `07-analiticas.jpg`          | Analíticas / Cross-Platform Performance  | Approved Visual Reference |
+| `08-publishing.jpg`          | Publishing / Release Pipeline Hub        | Approved Visual Reference |
+| `09-listo-para-publicar.jpg` | Listo para publicar / Distribution Gate  | Approved Visual Reference |
+| `10-scheduler.jpg`           | Scheduler / Calendar Automation          | Approved Visual Reference |
+| `11-integraciones.jpg`       | Integraciones / Service Connectors       | Approved Visual Reference |
+| `12-descargas.jpg`           | Descargas / Asset & Master Retrieval     | Approved Visual Reference |
+| `13-configuracion.jpg`       | Configuración / Studio Preferences       | Approved Visual Reference |
