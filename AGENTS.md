@@ -23,6 +23,7 @@ Mandatory rules:
 11. If the owner explicitly approves a canon change, update the canonical docs in the same change set.
 12. Keep provider integrations adapter-based and replaceable. Do not hard-code vendor-specific workflow logic when a stable internal provider contract can be used.
 13. Current audiovisual provider families are Google/Flow, ElevenLabs, Agnes, and fal.ai. Future SELF_HOSTED/CogVideoX is approved as a roadmap direction, not an immediate dependency.
+14. For coding-agent routing, follow `docs/product/VISION_MAXSON_INTERNAL_CAPABILITY_ROADMAP.md` §9. Codex defaults to GPT-6 Sol with effort matched to risk; Astra is exceptional. Antigravity/Gemini is the primary fallback when Codex quota is unavailable. Every change of application/model/effort must be visibly announced to the owner before an executable block.
 
 Authority order:
 
