@@ -611,3 +611,66 @@ SELF_HOSTED → CogVideoX
 This is enough diversity for the current stage.
 
 Future providers may be added when they are measurably better, cheaper, more reliable, or uniquely capable, provided they fit the same adapter-based architecture.
+
+
+---
+
+## 9. Development agent and model routing policy
+
+This policy governs which coding agent/model should be recommended for Vision Maxson development work. It is an owner-approved operating rule and may be revised when model availability or measured performance changes.
+
+### Codex
+
+Preferred default coding environment when quota is available.
+
+Current routing:
+
+- **GPT-6 Sol Medium**: normal implementation, bounded refactors, mechanical repository work, and well-specified changes.
+- **GPT-6 Sol High**: default for architecture, database migrations, D1, security, provider integrations, complex debugging, and changes with meaningful cross-system risk.
+- **GPT-6 Sol Extra High / XHigh**: use only when there is a concrete reason, such as a difficult forensic inconsistency, ambiguous state recovery, complex migration failure, deep multi-system debugging, or when High does not provide enough confidence.
+- **GPT-6 Astra**: exceptional escalation only. Use when the task is materially more difficult than Sol can handle reliably and the expected gain justifies its higher token/quota consumption. Astra is not the routine default.
+
+Do not escalate merely because a higher setting exists.
+
+### Antigravity
+
+Use Antigravity when Codex quota is exhausted/unavailable, or when its model/tooling is a better fit for the block.
+
+Current available routing:
+
+- **Gemini 3.8 Flash Medium**: small, focused, lower-risk or forensic tasks.
+- **Gemini 3.8 Flash High**: larger implementations, broad repository inspection, high-volume coding, and tasks where speed/capability efficiency is valuable.
+
+Claude Sonnet/Opus may be reconsidered when they become available again. Do not assume availability.
+
+### Switching rule
+
+Whenever a block changes coding application, model family, or reasoning level, the instruction given to the owner must start with a conspicuous alert.
+
+Examples:
+
+```text
+🚨 CAMBIO DE HERRAMIENTA — ESTE BLOQUE ES PARA ANTIGRAVITY, NO CODEX
+Modelo: Gemini 3.8 Flash High
+```
+
+```text
+🚨 CAMBIO DE NIVEL — CODEX
+Subir temporalmente de GPT-6 Sol High → GPT-6 Sol Extra High
+Motivo: <specific risk>
+```
+
+Every executable coding block should state:
+
+- application;
+- model;
+- reasoning/effort level;
+- reason for escalation when above the normal default.
+
+### Efficiency principle
+
+Use the least expensive/limited reasoning level that is still appropriate for the risk.
+
+The target is not maximum model consumption. The target is reliable progress, strong safety, and efficient use of available quota.
+
+If a model or plan changes in the future, preserve the decision logic above even if the exact product/model names change.
