@@ -474,3 +474,140 @@ A capability should reuse, where appropriate:
 - existing provider adapters for external execution.
 
 The desired result is a system that remains understandable, auditable, fluid, and replaceable at provider boundaries.
+
+
+---
+
+## 8. Canonical audiovisual provider strategy
+
+Vision Maxson must remain provider-pluggable. Provider integrations are adapters behind a stable internal contract, not hard-coded workflow branches.
+
+### Current audiovisual provider families
+
+The approved provider set for the current architecture is:
+
+1. **Google / Flow**
+   - direct Google audiovisual generation family;
+   - Veo and Google-native audiovisual models/capabilities available to the connected account;
+   - use direct Google access when quality, quota, latency, rights, or economics make it preferable.
+
+2. **ElevenLabs**
+   - remains a primary voice/audio provider;
+   - may also expose image/video generation models through the connected ElevenLabs account;
+   - Vision Maxson should treat each available model as a capability behind the ElevenLabs provider, not assume permanent availability of any specific third-party model.
+
+3. **Agnes**
+   - existing audiovisual provider with an approved provider adapter foundation;
+   - remains part of the production routing pool.
+
+4. **fal.ai**
+   - approved additional API provider / model aggregator;
+   - intended primarily to increase audiovisual model choice, concurrency, fallback capacity, and economic routing flexibility;
+   - should be integrated through the same provider registry and execution contracts as other providers;
+   - Vision Maxson may route to individual video/image models exposed through fal.ai according to verified capability, quality, cost, latency, rights, and availability.
+
+No additional aggregator is required by default after fal.ai. New aggregators/providers are added only when they demonstrate a material advantage.
+
+### Future self-hosted provider
+
+A future provider family is approved in principle:
+
+**SELF_HOSTED**
+
+Initial target model:
+
+**CogVideoX**
+
+This is a future capability, not an immediate implementation requirement.
+
+The intended architecture is:
+
+```text
+Vision Maxson
+  ↓
+Provider Router
+  ↓
+SELF_HOSTED adapter
+  ↓
+Dedicated GPU worker
+  ↓
+CogVideoX
+  ↓
+secure ingest / QA / R2 / Drive
+```
+
+The self-hosted worker may live on a dedicated always-on computer or future GPU infrastructure.
+
+Google Drive may store model artifacts or durable media, but storage itself does not execute inference. The self-hosted provider requires compute/GPU resources.
+
+If the self-hosted worker is unavailable, routing can fall back to another eligible provider according to policy.
+
+### Provider replacement and future onboarding
+
+The architecture must make adding a future provider straightforward.
+
+A new provider must not require rewriting the production pipeline.
+
+A provider adapter should declare or expose, where applicable:
+
+- provider identity;
+- model identity;
+- modality;
+- text-to-video / image-to-video / reference capabilities;
+- supported aspect ratios;
+- supported durations;
+- supported resolutions and frame rates;
+- audio generation capability;
+- first/last-frame capability;
+- reference-image/video/audio capability;
+- concurrency/queue behavior;
+- polling/webhook behavior;
+- output retrieval behavior;
+- estimated and actual normalized cost;
+- provider quota/balance health where available;
+- rights/commercial-use constraints;
+- known reliability/quality observations.
+
+The Provider Registry and Provider Intelligence decide how to use providers.
+
+Workflows must target internal contracts, not vendor-specific UI behavior.
+
+### Routing principle
+
+Provider selection is dynamic.
+
+Vision Maxson should compare eligible routes using factors such as:
+
+- required capability;
+- expected quality;
+- continuity;
+- cost;
+- available/free/included quota;
+- latency;
+- current capacity;
+- provider reliability;
+- language;
+- rights/commercial constraints;
+- scene complexity;
+- prior QA outcomes;
+- channel/project quality requirements.
+
+The system is not cheapest-first and is not permanently tied to one provider.
+
+### Current strategic boundary
+
+For the current roadmap, the provider pool is intentionally kept compact:
+
+```text
+GOOGLE
+ELEVENLABS
+AGNES
+FAL.AI
+
+FUTURE:
+SELF_HOSTED → CogVideoX
+```
+
+This is enough diversity for the current stage.
+
+Future providers may be added when they are measurably better, cheaper, more reliable, or uniquely capable, provided they fit the same adapter-based architecture.
