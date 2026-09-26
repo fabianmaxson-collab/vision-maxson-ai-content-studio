@@ -418,3 +418,42 @@ These may exist internally where technically necessary for authentication/securi
 ## 18. Change Control
 
 Any change to the 11-item global navigation, project-level ownership of Guion/Storyboard/Voces/etc., Publishing submenu structure, Intelligence AI behavior, owner privacy, primary interface language, or canonical visual identity requires explicit owner approval before implementation.
+
+
+---
+
+## 19. Internal-First Capability Strategy
+
+Vision Maxson follows an internal-first build-vs-buy policy for product intelligence and workflow capabilities.
+
+Logic, memory, learning, scoring, QA orchestration, cost/provider intelligence, experiments, Director Review, asset/rights intelligence, native observability, product analytics, scheduling intelligence, and similar functions should be implemented inside Vision Maxson when practical instead of creating unnecessary SaaS dependencies.
+
+External systems remain appropriate when they are the actual execution engine or authoritative source of truth, such as foundation/generative models, social-platform APIs and analytics, Cloudflare infrastructure, Google Drive, or provider account data.
+
+The complete owner-approved roadmap and dependency boundary is defined in:
+
+`docs/product/VISION_MAXSON_INTERNAL_CAPABILITY_ROADMAP.md`
+
+This roadmap must be treated as an implementation direction, not a requirement to build every future capability before the current audiovisual production pipeline is stable.
+
+### Audiovisual provider strategy
+
+The current approved audiovisual provider families are:
+
+- Google / Flow;
+- ElevenLabs;
+- Agnes;
+- fal.ai as the approved additional API/model aggregator.
+
+Future approved direction:
+
+- SELF_HOSTED provider using CogVideoX when operationally justified.
+
+Provider integrations must remain modular and replaceable. Adding a future provider should require a new adapter/capability profile rather than changes throughout the production pipeline.
+
+Routing remains dynamic and evidence-based across quality, capability, cost, latency, quota, reliability, rights, and project constraints.
+
+The detailed policy is maintained in:
+
+`docs/product/VISION_MAXSON_INTERNAL_CAPABILITY_ROADMAP.md`
+
