@@ -435,3 +435,25 @@ The complete owner-approved roadmap and dependency boundary is defined in:
 `docs/product/VISION_MAXSON_INTERNAL_CAPABILITY_ROADMAP.md`
 
 This roadmap must be treated as an implementation direction, not a requirement to build every future capability before the current audiovisual production pipeline is stable.
+
+### Audiovisual provider strategy
+
+The current approved audiovisual provider families are:
+
+- Google / Flow;
+- ElevenLabs;
+- Agnes;
+- fal.ai as the approved additional API/model aggregator.
+
+Future approved direction:
+
+- SELF_HOSTED provider using CogVideoX when operationally justified.
+
+Provider integrations must remain modular and replaceable. Adding a future provider should require a new adapter/capability profile rather than changes throughout the production pipeline.
+
+Routing remains dynamic and evidence-based across quality, capability, cost, latency, quota, reliability, rights, and project constraints.
+
+The detailed policy is maintained in:
+
+`docs/product/VISION_MAXSON_INTERNAL_CAPABILITY_ROADMAP.md`
+
